@@ -55,7 +55,19 @@ expect(StatusFormatter.compactTokenCount(1_250_000) == "1.3M", "millions should 
 expect(StatusFormatter.compactTokenCount(1_576_000_000) == "1.6B", "billions should abbreviate")
 
 let statsNow = Date(timeIntervalSince1970: 1_700_000_000)
+var statsCalendar = Calendar(identifier: .gregorian)
+statsCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
 let stats = TokenUsageStatsProvider.stats(from: [
+    TokenUsageSessionRecord(
+        updatedAt: statsNow.addingTimeInterval(-2 * 60 * 60),
+        usage: TokenUsageBreakdownDisplay(
+            totalTokens: 500,
+            inputTokens: 350,
+            cachedInputTokens: 100,
+            outputTokens: 125,
+            reasoningOutputTokens: 25
+        )
+    ),
     TokenUsageSessionRecord(
         updatedAt: statsNow.addingTimeInterval(-2 * 24 * 60 * 60),
         usage: TokenUsageBreakdownDisplay(
@@ -80,10 +92,14 @@ let stats = TokenUsageStatsProvider.stats(from: [
         updatedAt: statsNow.addingTimeInterval(-40 * 24 * 60 * 60),
         usage: TokenUsageBreakdownDisplay(totalTokens: 4_000)
     )
-], now: statsNow)
-expect(stats.weekly.sessionCount == 1, "weekly stats should include only last 7 days")
-expect(stats.weekly.usage.totalTokens == 1_000, "weekly stats should sum recent sessions")
-expect(stats.monthly.sessionCount == 2, "monthly stats should include last 30 days")
-expect(stats.monthly.usage.totalTokens == 3_000, "monthly stats should sum 30-day sessions")
+], now: statsNow, calendar: statsCalendar)
+expect(stats.today.sessionCount == 1, "today stats should include only today's sessions")
+expect(stats.today.usage.totalTokens == 500, "today stats should sum today's sessions")
+expect(stats.weekly.sessionCount == 2, "weekly stats should include only last 7 days")
+expect(stats.weekly.usage.totalTokens == 1_500, "weekly stats should sum recent sessions")
+expect(stats.monthly.sessionCount == 3, "monthly stats should include last 30 days")
+expect(stats.monthly.usage.totalTokens == 3_500, "monthly stats should sum 30-day sessions")
+expect(stats.daily.count == 7, "daily strip should include seven days")
+expect(stats.daily.map { $0.usage.totalTokens }.reduce(0, +) == 1_500, "daily strip should show last seven calendar days")
 
 print("CodexTokenTracker checks passed")

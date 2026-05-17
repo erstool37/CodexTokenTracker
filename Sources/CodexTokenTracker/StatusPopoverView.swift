@@ -226,135 +226,99 @@ private struct TokenStatsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Token stats")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                TokenStatsLegend()
-            }
-            TokenStatsPeriodView(period: stats.weekly, maxTotal: maxTotal)
-            TokenStatsPeriodView(period: stats.monthly, maxTotal: maxTotal)
+            Text("Token stats")
+                .font(.subheadline.weight(.semibold))
+            TokenStatsPeriodView(period: stats.today)
+            TokenStatsPeriodView(period: stats.weekly)
+            TokenStatsPeriodView(period: stats.monthly)
+            DailyTokenStripView(days: stats.daily)
         }
         .padding(8)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var maxTotal: Int {
-        max(stats.weekly.usage.totalTokens, stats.monthly.usage.totalTokens, 1)
     }
 }
 
 private struct TokenStatsPeriodView: View {
     let period: TokenUsagePeriodStats
-    let maxTotal: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(period.label)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(StatusFormatter.compactTokenCount(period.usage.totalTokens))
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-            }
-            HStack(spacing: 10) {
-                stat("In", period.usage.inputTokens)
-                stat("Out", period.usage.outputTokens)
-                stat("Reason", period.usage.reasoningOutputTokens)
-                Spacer(minLength: 0)
-                Text("\(period.sessionCount) sessions")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption2)
-            TokenUsageBarView(usage: period.usage, maxTotal: maxTotal)
+        HStack(alignment: .firstTextBaseline) {
+            Text(period.label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(sessionText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(StatusFormatter.compactTokenCount(period.usage.totalTokens))
+                .fontWeight(.semibold)
+                .monospacedDigit()
         }
         .font(.caption)
     }
 
-    private func stat(_ label: String, _ value: Int) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Text(StatusFormatter.compactTokenCount(value))
-                .monospacedDigit()
-        }
+    private var sessionText: String {
+        period.sessionCount == 1 ? "1 session" : "\(period.sessionCount) sessions"
     }
 }
 
-private struct TokenStatsLegend: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            legendItem("In", .blue)
-            legendItem("Out", .teal)
-            legendItem("Reason", .orange)
-        }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-    }
-
-    private func legendItem(_ label: String, _ color: Color) -> some View {
-        HStack(spacing: 3) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(label)
-        }
-    }
-}
-
-private struct TokenUsageBarView: View {
-    let usage: TokenUsageBreakdownDisplay
-    let maxTotal: Int
+private struct DailyTokenStripView: View {
+    let days: [TokenUsageDailyStats]
 
     var body: some View {
-        GeometryReader { proxy in
-            let availableWidth = proxy.size.width
-            let total = max(usage.totalTokens, segmentTotal)
-            let filledWidth = availableWidth * CGFloat(min(Double(total) / Double(max(maxTotal, 1)), 1.0))
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.14))
-                HStack(spacing: 0) {
-                    segment(inputTokens, color: .blue, width: filledWidth)
-                    segment(outputTokens, color: .teal, width: filledWidth)
-                    segment(reasoningTokens, color: .orange, width: filledWidth)
-                }
-                .frame(width: filledWidth, height: 8, alignment: .leading)
-                .clipShape(Capsule())
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Last 7 days")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("peak \(StatusFormatter.compactTokenCount(maxDailyTokens))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(days) { day in
+                    DayTokenBarView(day: day, maxTokens: maxDailyTokens)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 38)
         }
-        .frame(height: 8)
+    }
+
+    private var maxDailyTokens: Int {
+        max(days.map { $0.usage.totalTokens }.max() ?? 0, 1)
+    }
+}
+
+private struct DayTokenBarView: View {
+    let day: TokenUsageDailyStats
+    let maxTokens: Int
+
+    var body: some View {
+        VStack(spacing: 3) {
+            ZStack(alignment: .bottom) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.16))
+                    .frame(width: 10, height: 24)
+                Capsule()
+                    .fill(day.usage.totalTokens > 0 ? Color.blue : Color.secondary.opacity(0.22))
+                    .frame(width: 10, height: barHeight)
+            }
+            Text(day.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Token mix")
+        .accessibilityLabel(day.label)
         .accessibilityValue(
-            "Input \(StatusFormatter.compactTokenCount(usage.inputTokens)), output \(StatusFormatter.compactTokenCount(usage.outputTokens)), reasoning \(StatusFormatter.compactTokenCount(usage.reasoningOutputTokens))"
+            "\(StatusFormatter.compactTokenCount(day.usage.totalTokens)), \(day.sessionCount) sessions"
         )
+        .frame(maxWidth: .infinity)
     }
 
-    private var inputTokens: Int {
-        max(usage.inputTokens, 0)
-    }
-
-    private var outputTokens: Int {
-        max(usage.outputTokens - usage.reasoningOutputTokens, 0)
-    }
-
-    private var reasoningTokens: Int {
-        max(usage.reasoningOutputTokens, 0)
-    }
-
-    private var segmentTotal: Int {
-        max(inputTokens + outputTokens + reasoningTokens, 1)
-    }
-
-    @ViewBuilder
-    private func segment(_ value: Int, color: Color, width: CGFloat) -> some View {
-        if value > 0 {
-            Rectangle()
-                .fill(color)
-                .frame(width: width * CGFloat(value) / CGFloat(segmentTotal))
+    private var barHeight: CGFloat {
+        guard day.usage.totalTokens > 0 else {
+            return 3
         }
+        return max(4, 24 * CGFloat(day.usage.totalTokens) / CGFloat(max(maxTokens, 1)))
     }
 }

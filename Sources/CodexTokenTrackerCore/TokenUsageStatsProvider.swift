@@ -11,15 +11,24 @@ public enum TokenUsageStatsProvider {
         return stats(from: sessionRecords(in: codexHome, modifiedSince: monthStart), now: now)
     }
 
-    public static func stats(from records: [TokenUsageSessionRecord], now: Date = Date()) -> TokenUsageStats {
+    public static func stats(
+        from records: [TokenUsageSessionRecord],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> TokenUsageStats {
         let weekStart = now.addingTimeInterval(-7 * 24 * 60 * 60)
         let monthStart = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        let todayStart = calendar.startOfDay(for: now)
+        let tomorrowStart = calendar.date(byAdding: .day, value: 1, to: todayStart) ?? now
+        let todayRecords = records.filter { $0.updatedAt >= todayStart && $0.updatedAt < tomorrowStart && $0.updatedAt <= now }
         let weeklyRecords = records.filter { $0.updatedAt >= weekStart && $0.updatedAt <= now }
         let monthlyRecords = records.filter { $0.updatedAt >= monthStart && $0.updatedAt <= now }
 
         return TokenUsageStats(
+            today: periodStats(label: "Today", records: todayRecords),
             weekly: periodStats(label: "7 days", records: weeklyRecords),
             monthly: periodStats(label: "30 days", records: monthlyRecords),
+            daily: dailyStats(from: records, now: now, calendar: calendar),
             source: "~/.codex/sessions"
         )
     }
@@ -30,6 +39,40 @@ public enum TokenUsageStatsProvider {
             sessionCount: records.count,
             usage: records.reduce(.zero) { $0 + $1.usage }
         )
+    }
+
+    private static func dailyStats(
+        from records: [TokenUsageSessionRecord],
+        now: Date,
+        calendar: Calendar
+    ) -> [TokenUsageDailyStats] {
+        let todayStart = calendar.startOfDay(for: now)
+        let dayFormatter = DateFormatter()
+        dayFormatter.calendar = calendar
+        dayFormatter.locale = Locale.autoupdatingCurrent
+        dayFormatter.dateFormat = "E"
+
+        return (0..<7).reversed().map { daysAgo in
+            let start = calendar.date(byAdding: .day, value: -daysAgo, to: todayStart) ?? todayStart
+            let end = calendar.date(byAdding: .day, value: 1, to: start) ?? now
+            let dayRecords = records.filter { $0.updatedAt >= start && $0.updatedAt < end && $0.updatedAt <= now }
+            let label = String(dayFormatter.string(from: start).prefix(1))
+            return TokenUsageDailyStats(
+                id: dayID(for: start, calendar: calendar),
+                label: label,
+                sessionCount: dayRecords.count,
+                usage: dayRecords.reduce(.zero) { $0 + $1.usage }
+            )
+        }
+    }
+
+    private static func dayID(for date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return [
+            components.year.map(String.init) ?? "0000",
+            String(format: "%02d", components.month ?? 0),
+            String(format: "%02d", components.day ?? 0)
+        ].joined(separator: "-")
     }
 
     private static func sessionRecords(in codexHome: URL, modifiedSince cutoff: Date) -> [TokenUsageSessionRecord] {

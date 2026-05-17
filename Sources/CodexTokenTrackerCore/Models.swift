@@ -110,13 +110,23 @@ public enum TrackerLoadState: Equatable, Sendable {
 }
 
 public struct TokenUsageStats: Equatable, Sendable {
+    public var today: TokenUsagePeriodStats
     public var weekly: TokenUsagePeriodStats
     public var monthly: TokenUsagePeriodStats
+    public var daily: [TokenUsageDailyStats]
     public var source: String
 
-    public init(weekly: TokenUsagePeriodStats, monthly: TokenUsagePeriodStats, source: String) {
+    public init(
+        today: TokenUsagePeriodStats,
+        weekly: TokenUsagePeriodStats,
+        monthly: TokenUsagePeriodStats,
+        daily: [TokenUsageDailyStats],
+        source: String
+    ) {
+        self.today = today
         self.weekly = weekly
         self.monthly = monthly
+        self.daily = daily
         self.source = source
     }
 }
@@ -127,6 +137,20 @@ public struct TokenUsagePeriodStats: Equatable, Sendable {
     public var usage: TokenUsageBreakdownDisplay
 
     public init(label: String, sessionCount: Int, usage: TokenUsageBreakdownDisplay) {
+        self.label = label
+        self.sessionCount = sessionCount
+        self.usage = usage
+    }
+}
+
+public struct TokenUsageDailyStats: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var label: String
+    public var sessionCount: Int
+    public var usage: TokenUsageBreakdownDisplay
+
+    public init(id: String, label: String, sessionCount: Int, usage: TokenUsageBreakdownDisplay) {
+        self.id = id
         self.label = label
         self.sessionCount = sessionCount
         self.usage = usage
