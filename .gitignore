@@ -1,0 +1,21 @@
+.DS_Store
+.build/
+.swiftpm-cache/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.app
+*.dSYM
+*.log
+
+# Local Codex/OpenAI data must never be committed.
+auth.json
+state*.sqlite*
+logs*.sqlite*
+history.jsonl
+session_index.jsonl
+.codex/
+
+# Local packaging output.
+dist/
