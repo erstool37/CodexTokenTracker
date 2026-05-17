@@ -22,6 +22,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp ".build/$CONFIGURATION/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 cp "AppBundle/Info.plist" "$CONTENTS_DIR/Info.plist"
+printf "APPL????" > "$CONTENTS_DIR/PkgInfo"
 swift "Scripts/make_icon.swift" "$RESOURCES_DIR/$APP_NAME.icns"
 
 chmod +x "$MACOS_DIR/$APP_NAME"

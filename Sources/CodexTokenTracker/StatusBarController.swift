@@ -65,15 +65,17 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         button.image?.isTemplate = true
 
         if store.isRefreshing && store.currentSnapshot == nil {
-            button.title = " ..."
+            button.title = " Codex..."
             button.contentTintColor = nil
             return
         }
 
         if let percent = store.currentSnapshot?.bestRemainingPercent {
-            button.title = " \(percent)%"
+            button.title = " Codex \(percent)%"
+        } else if store.hasError {
+            button.title = " Codex !"
         } else {
-            button.title = ""
+            button.title = " Codex"
         }
 
         if store.hasError {
@@ -88,17 +90,23 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    @objc private func togglePopover(_ sender: AnyObject?) {
+    func showPopover() {
         guard let button = statusItem.button else {
             return
         }
 
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
+        if !popover.isShown {
             store.refresh()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    @objc private func togglePopover(_ sender: AnyObject?) {
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            showPopover()
         }
     }
 }
