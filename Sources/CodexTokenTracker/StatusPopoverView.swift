@@ -246,18 +246,11 @@ private struct TokenStatsPeriodView: View {
             Text(period.label)
                 .foregroundStyle(.secondary)
             Spacer()
-            Text(sessionText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             Text(StatusFormatter.compactTokenCount(period.usage.totalTokens))
                 .fontWeight(.semibold)
                 .monospacedDigit()
         }
         .font(.caption)
-    }
-
-    private var sessionText: String {
-        period.sessionCount == 1 ? "1 session" : "\(period.sessionCount) sessions"
     }
 }
 
@@ -309,9 +302,7 @@ private struct DayTokenBarView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(day.label)
-        .accessibilityValue(
-            "\(StatusFormatter.compactTokenCount(day.usage.totalTokens)), \(day.sessionCount) sessions"
-        )
+        .accessibilityValue(StatusFormatter.compactTokenCount(day.usage.totalTokens))
         .frame(maxWidth: .infinity)
     }
 
