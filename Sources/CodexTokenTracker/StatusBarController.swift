@@ -5,8 +5,8 @@ import SwiftUI
 
 @MainActor
 final class StatusBarController: NSObject, NSPopoverDelegate {
-    private static let popoverSize = NSSize(width: 360, height: 360)
-    private static let screenMargin: CGFloat = 10
+    private static let popoverSize = NSSize(width: 340, height: 320)
+    private static let screenMargin: CGFloat = 12
 
     private let statusItem: NSStatusItem
     private let popover: NSPopover
@@ -117,14 +117,15 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     }
 
     private func constrainedContentSize(for button: NSStatusBarButton) -> NSSize {
-        let visibleFrame = (button.window?.screen ?? NSScreen.main)?.visibleFrame
-        guard let visibleFrame else {
+        let screen = button.window?.screen ?? NSScreen.main
+        guard let screen else {
             return Self.popoverSize
         }
+        let visibleFrame = usableFrame(for: screen)
 
         return NSSize(
             width: min(Self.popoverSize.width, max(300, visibleFrame.width - (Self.screenMargin * 2))),
-            height: min(Self.popoverSize.height, max(280, visibleFrame.height - (Self.screenMargin * 2)))
+            height: min(Self.popoverSize.height, max(240, visibleFrame.height - (Self.screenMargin * 2)))
         )
     }
 
@@ -139,7 +140,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             return
         }
 
-        let visibleFrame = screen.visibleFrame.insetBy(dx: Self.screenMargin, dy: Self.screenMargin)
+        let visibleFrame = usableFrame(for: screen).insetBy(dx: Self.screenMargin, dy: Self.screenMargin)
         var frame = window.frame
         if frame.maxY > visibleFrame.maxY {
             frame.origin.y -= frame.maxY - visibleFrame.maxY
@@ -158,5 +159,16 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             window.setFrame(frame, display: true)
         }
         window.makeKey()
+    }
+
+    private func usableFrame(for screen: NSScreen) -> NSRect {
+        let menuBarBottom = screen.frame.maxY - NSStatusBar.system.thickness
+        let top = min(screen.visibleFrame.maxY, menuBarBottom)
+        return NSRect(
+            x: screen.visibleFrame.minX,
+            y: screen.visibleFrame.minY,
+            width: screen.visibleFrame.width,
+            height: max(1, top - screen.visibleFrame.minY)
+        )
     }
 }

@@ -5,14 +5,14 @@ struct StatusPopoverView: View {
     @ObservedObject var store: StatusStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
             Divider()
             footer
         }
-        .padding(16)
-        .frame(width: 360)
+        .padding(12)
+        .frame(width: 340)
     }
 
     @ViewBuilder
@@ -81,7 +81,7 @@ private struct SnapshotView: View {
     let stale: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             if snapshot.limits.isEmpty {
                 Text("No rate-limit data returned.")
                     .font(.caption)
@@ -115,7 +115,7 @@ private struct LimitBucketView: View {
     let bucket: LimitBucketDisplay
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(bucket.label)
                 .font(.subheadline.weight(.semibold))
             ForEach(bucket.windows) { window in
@@ -144,7 +144,7 @@ private struct LimitBucketView: View {
                 .font(.caption)
             }
         }
-        .padding(10)
+        .padding(8)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -154,7 +154,7 @@ private struct LimitWindowView: View {
 
     var body: some View {
         if window.showsNumericUsage {
-            VStack(spacing: 4) {
+            VStack(spacing: 3) {
                 HStack {
                     Text(window.label)
                         .foregroundStyle(.secondary)
@@ -225,7 +225,7 @@ private struct TokenStatsView: View {
     let stats: TokenUsageStats
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Token stats")
                     .font(.subheadline.weight(.semibold))
@@ -235,7 +235,7 @@ private struct TokenStatsView: View {
             TokenStatsPeriodView(period: stats.weekly, maxTotal: maxTotal)
             TokenStatsPeriodView(period: stats.monthly, maxTotal: maxTotal)
         }
-        .padding(10)
+        .padding(8)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -249,7 +249,7 @@ private struct TokenStatsPeriodView: View {
     let maxTotal: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(period.label)
                     .foregroundStyle(.secondary)
