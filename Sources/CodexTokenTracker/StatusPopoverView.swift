@@ -110,18 +110,9 @@ struct StatusPopoverView: View {
             } label: {
                 Label("Usage", systemImage: "arrow.up.right.square")
             }
-
-            Spacer()
-
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit", systemImage: "xmark.circle")
-            }
-            .buttonStyle(.borderless)
         }
         .labelStyle(.iconOnly)
-        .help("Refresh, open Codex usage, or quit")
+        .help("Refresh or open Codex usage")
     }
 }
 

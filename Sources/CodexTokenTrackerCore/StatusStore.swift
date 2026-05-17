@@ -14,13 +14,13 @@ public final class StatusStore: ObservableObject {
         self.provider = provider
         staleTicker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
+                try? await Task.sleep(for: .seconds(60))
                 self?.objectWillChange.send()
             }
         }
         refreshTicker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(300))
+                try? await Task.sleep(for: .seconds(600))
                 self?.refresh()
             }
         }

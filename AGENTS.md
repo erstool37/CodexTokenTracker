@@ -41,6 +41,8 @@ Use a QA subagent before final completion and after any launch/usability fix. Th
 5. Click-to-use: `CodexTokenTracker.app` launches by double-click/Finder semantics, creates a visible menu bar item, and opens a usable popover.
 6. Efficiency/refactor: expensive scans, app-server calls, timers, and UI updates are bounded so the widget can stay running without noticeable RAM or CPU impact.
 
+The QA agent also owns efficiency refactor review. When it finds a small, low-risk refactor that materially reduces CPU, RAM, disk scanning, process churn, or unnecessary UI work, it may implement that focused refactor directly and must list the exact files changed. Larger refactors should be reported as Fail with a concrete patch plan.
+
 ## Required Build Flow
 
 1. Inspect local instructions and the current git worktree before edits.
