@@ -28,7 +28,6 @@ public enum TokenUsageStatsProvider {
             today: periodStats(label: "Today", records: todayRecords),
             weekly: periodStats(label: "7 days", records: weeklyRecords),
             monthly: periodStats(label: "28 days", records: monthlyRecords),
-            monthlyHeatmap: heatmapDays(from: records, now: now, calendar: calendar),
             source: "~/.codex/sessions"
         )
     }
@@ -39,38 +38,6 @@ public enum TokenUsageStatsProvider {
             sessionCount: records.count,
             usage: records.reduce(.zero) { $0 + $1.usage }
         )
-    }
-
-    private static func heatmapDays(
-        from records: [TokenUsageSessionRecord],
-        now: Date,
-        calendar: Calendar
-    ) -> [TokenUsageHeatmapDay] {
-        let todayStart = calendar.startOfDay(for: now)
-        let dayFormatter = DateFormatter()
-        dayFormatter.calendar = calendar
-        dayFormatter.locale = Locale.autoupdatingCurrent
-        dayFormatter.dateFormat = "d"
-
-        return (0..<28).reversed().map { daysAgo in
-            let start = calendar.date(byAdding: .day, value: -daysAgo, to: todayStart) ?? todayStart
-            let end = calendar.date(byAdding: .day, value: 1, to: start) ?? now
-            let dayRecords = records.filter { $0.updatedAt >= start && $0.updatedAt < end && $0.updatedAt <= now }
-            return TokenUsageHeatmapDay(
-                id: dayID(for: start, calendar: calendar),
-                label: dayFormatter.string(from: start),
-                usage: dayRecords.reduce(.zero) { $0 + $1.usage }
-            )
-        }
-    }
-
-    private static func dayID(for date: Date, calendar: Calendar) -> String {
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
-        return [
-            components.year.map(String.init) ?? "0000",
-            String(format: "%02d", components.month ?? 0),
-            String(format: "%02d", components.day ?? 0)
-        ].joined(separator: "-")
     }
 
     private static func sessionRecords(in codexHome: URL, modifiedSince cutoff: Date) -> [TokenUsageSessionRecord] {

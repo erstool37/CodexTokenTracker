@@ -113,20 +113,17 @@ public struct TokenUsageStats: Equatable, Sendable {
     public var today: TokenUsagePeriodStats
     public var weekly: TokenUsagePeriodStats
     public var monthly: TokenUsagePeriodStats
-    public var monthlyHeatmap: [TokenUsageHeatmapDay]
     public var source: String
 
     public init(
         today: TokenUsagePeriodStats,
         weekly: TokenUsagePeriodStats,
         monthly: TokenUsagePeriodStats,
-        monthlyHeatmap: [TokenUsageHeatmapDay],
         source: String
     ) {
         self.today = today
         self.weekly = weekly
         self.monthly = monthly
-        self.monthlyHeatmap = monthlyHeatmap
         self.source = source
     }
 }
@@ -139,18 +136,6 @@ public struct TokenUsagePeriodStats: Equatable, Sendable {
     public init(label: String, sessionCount: Int, usage: TokenUsageBreakdownDisplay) {
         self.label = label
         self.sessionCount = sessionCount
-        self.usage = usage
-    }
-}
-
-public struct TokenUsageHeatmapDay: Identifiable, Equatable, Sendable {
-    public var id: String
-    public var label: String
-    public var usage: TokenUsageBreakdownDisplay
-
-    public init(id: String, label: String, usage: TokenUsageBreakdownDisplay) {
-        self.id = id
-        self.label = label
         self.usage = usage
     }
 }

@@ -231,7 +231,6 @@ private struct TokenStatsView: View {
             TokenStatsPeriodView(period: stats.today)
             TokenStatsPeriodView(period: stats.weekly)
             TokenStatsPeriodView(period: stats.monthly)
-            MonthlyHeatmapView(days: stats.monthlyHeatmap)
         }
         .padding(8)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
@@ -251,50 +250,5 @@ private struct TokenStatsPeriodView: View {
                 .monospacedDigit()
         }
         .font(.caption)
-    }
-}
-
-private struct MonthlyHeatmapView: View {
-    let days: [TokenUsageHeatmapDay]
-
-    private let columns = Array(
-        repeating: GridItem(.flexible(minimum: 8, maximum: 14), spacing: 4),
-        count: 7
-    )
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("28-day heatmap")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("peak \(StatusFormatter.compactTokenCount(maxDailyTokens))")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
-                ForEach(days) { day in
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(color(for: day.usage.totalTokens))
-                        .aspectRatio(1, contentMode: .fit)
-                        .accessibilityLabel("Day \(day.label)")
-                        .accessibilityValue(StatusFormatter.compactTokenCount(day.usage.totalTokens))
-                }
-            }
-        }
-        .padding(.top, 2)
-    }
-
-    private var maxDailyTokens: Int {
-        max(days.map { $0.usage.totalTokens }.max() ?? 0, 1)
-    }
-
-    private func color(for tokens: Int) -> Color {
-        guard tokens > 0 else {
-            return Color.secondary.opacity(0.16)
-        }
-        let ratio = min(max(Double(tokens) / Double(maxDailyTokens), 0.0), 1.0)
-        return Color.blue.opacity(0.28 + (0.72 * ratio))
     }
 }

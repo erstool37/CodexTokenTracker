@@ -41,6 +41,6 @@ CodexTokenTracker asks Codex app-server for account and rate-limit status, then 
 ## Design
 
 - Menu bar: minimal monochrome status icon with no numeric percentage text.
-- Popover: returned limit buckets, reset times, credits, visual weekly/28-day token stats, freshness, manual refresh, and Codex usage link.
+- Popover: returned limit buckets, reset times, credits, weekly/28-day token stats, freshness, manual refresh, and Codex usage link.
 - Refresh: on launch, on popover open, and from the refresh button. Data older than 60 seconds is marked stale.
 - Startup: after it has been opened once, the app registers itself to start again at macOS login/restart. If Apple's login-item service is unavailable, it writes a user LaunchAgent fallback.

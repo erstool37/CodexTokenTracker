@@ -100,10 +100,5 @@ expect(stats.weekly.usage.totalTokens == 1_500, "weekly stats should sum recent 
 expect(stats.monthly.label == "28 days", "monthly stats should be shown as a rolling 28-day window")
 expect(stats.monthly.sessionCount == 3, "monthly stats should include last 28 days")
 expect(stats.monthly.usage.totalTokens == 3_500, "monthly stats should sum 28-day sessions")
-expect(stats.monthlyHeatmap.count == 28, "monthly heatmap should include 28 days")
-expect(
-    stats.monthlyHeatmap.map { $0.usage.totalTokens }.reduce(0, +) == 3_500,
-    "monthly heatmap should show the last 28 calendar days"
-)
 
 print("CodexTokenTracker checks passed")
