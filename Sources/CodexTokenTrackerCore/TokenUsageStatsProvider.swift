@@ -7,7 +7,7 @@ public enum TokenUsageStatsProvider {
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
         now: Date = Date()
     ) -> TokenUsageStats {
-        let monthStart = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
         return stats(from: sessionRecords(in: codexHome, modifiedSince: monthStart), now: now)
     }
 
@@ -17,7 +17,7 @@ public enum TokenUsageStatsProvider {
         calendar: Calendar = .current
     ) -> TokenUsageStats {
         let weekStart = now.addingTimeInterval(-7 * 24 * 60 * 60)
-        let monthStart = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
         let todayStart = calendar.startOfDay(for: now)
         let tomorrowStart = calendar.date(byAdding: .day, value: 1, to: todayStart) ?? now
         let todayRecords = records.filter { $0.updatedAt >= todayStart && $0.updatedAt < tomorrowStart && $0.updatedAt <= now }
@@ -27,8 +27,8 @@ public enum TokenUsageStatsProvider {
         return TokenUsageStats(
             today: periodStats(label: "Today", records: todayRecords),
             weekly: periodStats(label: "7 days", records: weeklyRecords),
-            monthly: periodStats(label: "30 days", records: monthlyRecords),
-            daily: dailyStats(from: records, now: now, calendar: calendar),
+            monthly: periodStats(label: "28 days", records: monthlyRecords),
+            monthlyHeatmap: heatmapDays(from: records, now: now, calendar: calendar),
             source: "~/.codex/sessions"
         )
     }
@@ -41,26 +41,24 @@ public enum TokenUsageStatsProvider {
         )
     }
 
-    private static func dailyStats(
+    private static func heatmapDays(
         from records: [TokenUsageSessionRecord],
         now: Date,
         calendar: Calendar
-    ) -> [TokenUsageDailyStats] {
+    ) -> [TokenUsageHeatmapDay] {
         let todayStart = calendar.startOfDay(for: now)
         let dayFormatter = DateFormatter()
         dayFormatter.calendar = calendar
         dayFormatter.locale = Locale.autoupdatingCurrent
-        dayFormatter.dateFormat = "E"
+        dayFormatter.dateFormat = "d"
 
-        return (0..<7).reversed().map { daysAgo in
+        return (0..<28).reversed().map { daysAgo in
             let start = calendar.date(byAdding: .day, value: -daysAgo, to: todayStart) ?? todayStart
             let end = calendar.date(byAdding: .day, value: 1, to: start) ?? now
             let dayRecords = records.filter { $0.updatedAt >= start && $0.updatedAt < end && $0.updatedAt <= now }
-            let label = String(dayFormatter.string(from: start).prefix(1))
-            return TokenUsageDailyStats(
+            return TokenUsageHeatmapDay(
                 id: dayID(for: start, calendar: calendar),
-                label: label,
-                sessionCount: dayRecords.count,
+                label: dayFormatter.string(from: start),
                 usage: dayRecords.reduce(.zero) { $0 + $1.usage }
             )
         }

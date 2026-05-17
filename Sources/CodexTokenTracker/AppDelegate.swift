@@ -1,6 +1,5 @@
 import AppKit
 import CodexTokenTrackerCore
-import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -16,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forEventClass: AEEventClass(kCoreEventClass),
             andEventID: AEEventID(kAEReopenApplication)
         )
-        enableLaunchAtLoginIfPossible()
+        LaunchAtLoginInstaller.enable()
         store.refresh()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.showWidget()
@@ -41,12 +40,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         withReplyEvent replyEvent: NSAppleEventDescriptor
     ) {
         showWidget()
-    }
-
-    private func enableLaunchAtLoginIfPossible() {
-        guard SMAppService.mainApp.status != .enabled else {
-            return
-        }
-        try? SMAppService.mainApp.register()
     }
 }

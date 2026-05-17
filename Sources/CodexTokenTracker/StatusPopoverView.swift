@@ -231,7 +231,7 @@ private struct TokenStatsView: View {
             TokenStatsPeriodView(period: stats.today)
             TokenStatsPeriodView(period: stats.weekly)
             TokenStatsPeriodView(period: stats.monthly)
-            DailyTokenStripView(days: stats.daily)
+            MonthlyHeatmapView(days: stats.monthlyHeatmap)
         }
         .padding(8)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
@@ -254,13 +254,18 @@ private struct TokenStatsPeriodView: View {
     }
 }
 
-private struct DailyTokenStripView: View {
-    let days: [TokenUsageDailyStats]
+private struct MonthlyHeatmapView: View {
+    let days: [TokenUsageHeatmapDay]
+
+    private let columns = Array(
+        repeating: GridItem(.flexible(minimum: 8, maximum: 14), spacing: 4),
+        count: 7
+    )
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Last 7 days")
+                Text("28-day heatmap")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -268,48 +273,28 @@ private struct DailyTokenStripView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            HStack(alignment: .bottom, spacing: 4) {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
                 ForEach(days) { day in
-                    DayTokenBarView(day: day, maxTokens: maxDailyTokens)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(color(for: day.usage.totalTokens))
+                        .aspectRatio(1, contentMode: .fit)
+                        .accessibilityLabel("Day \(day.label)")
+                        .accessibilityValue(StatusFormatter.compactTokenCount(day.usage.totalTokens))
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 38)
         }
+        .padding(.top, 2)
     }
 
     private var maxDailyTokens: Int {
         max(days.map { $0.usage.totalTokens }.max() ?? 0, 1)
     }
-}
 
-private struct DayTokenBarView: View {
-    let day: TokenUsageDailyStats
-    let maxTokens: Int
-
-    var body: some View {
-        VStack(spacing: 3) {
-            ZStack(alignment: .bottom) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.16))
-                    .frame(width: 10, height: 24)
-                Capsule()
-                    .fill(day.usage.totalTokens > 0 ? Color.blue : Color.secondary.opacity(0.22))
-                    .frame(width: 10, height: barHeight)
-            }
-            Text(day.label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    private func color(for tokens: Int) -> Color {
+        guard tokens > 0 else {
+            return Color.secondary.opacity(0.16)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(day.label)
-        .accessibilityValue(StatusFormatter.compactTokenCount(day.usage.totalTokens))
-        .frame(maxWidth: .infinity)
-    }
-
-    private var barHeight: CGFloat {
-        guard day.usage.totalTokens > 0 else {
-            return 3
-        }
-        return max(4, 24 * CGFloat(day.usage.totalTokens) / CGFloat(max(maxTokens, 1)))
+        let ratio = min(max(Double(tokens) / Double(maxDailyTokens), 0.0), 1.0)
+        return Color.blue.opacity(0.28 + (0.72 * ratio))
     }
 }
