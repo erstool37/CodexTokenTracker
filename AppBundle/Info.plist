@@ -8,6 +8,8 @@
     <string>com.erstool37.CodexTokenTracker</string>
     <key>CFBundleName</key>
     <string>CodexTokenTracker</string>
+    <key>CFBundleDisplayName</key>
+    <string>CodexTokenTracker</string>
     <key>CFBundleIconFile</key>
     <string>CodexTokenTracker</string>
     <key>CFBundlePackageType</key>

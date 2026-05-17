@@ -59,8 +59,26 @@ public enum StatusMapper {
         }
 
         return snapshots.compactMap { key, snapshot in
-            limitDisplay(key: key, snapshot: snapshot, now: now)
+            if shouldHideBucket(key: key, snapshot: snapshot) {
+                return nil
+            }
+            return limitDisplay(key: key, snapshot: snapshot, now: now)
         }
+    }
+
+    private static func shouldHideBucket(key: String, snapshot: RateLimitSnapshotDTO) -> Bool {
+        let text = [
+            key,
+            snapshot.limitId,
+            snapshot.limitName
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        .lowercased()
+
+        return text.contains("codex-spark")
+            || text.contains("codex spark")
+            || text.contains("bengalfox")
     }
 
     private static func limitDisplay(key: String, snapshot: RateLimitSnapshotDTO, now: Date) -> LimitBucketDisplay? {
@@ -93,7 +111,8 @@ public enum StatusMapper {
             label: StatusFormatter.windowLabel(minutes: window.windowDurationMins, fallback: fallback),
             percentUsed: window.usedPercent,
             percentLeft: left,
-            resetsAtText: StatusFormatter.resetText(secondsSince1970: window.resetsAt, now: now)
+            resetsAtText: StatusFormatter.resetText(secondsSince1970: window.resetsAt, now: now),
+            showsNumericUsage: window.windowDurationMins != 300
         )
     }
 

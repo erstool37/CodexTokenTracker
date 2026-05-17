@@ -64,66 +64,69 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
             throw AppServerClientError.launchFailed(error.localizedDescription)
         }
 
+        let stdoutBuffer = OutputBuffer()
+        let stderrBuffer = OutputBuffer()
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                stdoutBuffer.append(data)
+            }
+        }
+        error.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                stderrBuffer.append(data)
+            }
+        }
+
+        defer {
+            output.fileHandleForReading.readabilityHandler = nil
+            error.fileHandleForReading.readabilityHandler = nil
+            try? input.fileHandleForWriting.close()
+            terminate(process)
+        }
+
         do {
-            let messages: [[String: Any]] = [[
-                "method": "initialize",
-                "id": 1,
-                "params": [
-                    "clientInfo": [
-                        "name": "codex_token_tracker",
-                        "title": "CodexTokenTracker",
-                        "version": "0.1.0"
-                    ],
-                    "capabilities": [
-                        "experimentalApi": true,
-                        "optOutNotificationMethods": [
-                            "thread/started",
-                            "item/agentMessage/delta",
-                            "item/started",
-                            "item/completed"
-                        ]
-                    ]
-                ]
-            ], [
-                "method": "initialized"
-            ], [
-                "method": "account/read",
-                "id": 2,
-                "params": ["refreshToken": true]
-            ], [
-                "method": "account/rateLimits/read",
-                "id": 3
-            ]]
-
             let writer = input.fileHandleForWriting
-            for message in messages {
-                try send(message, to: writer)
-            }
-            try? writer.close()
+            try send(initializeMessage, to: writer)
+            _ = try waitForResponse(
+                InitializeResponse.self,
+                expectedID: 1,
+                from: process,
+                stdout: stdoutBuffer,
+                stderr: stderrBuffer,
+                timeout: 10
+            )
 
-            if !waitForExit(process, timeout: 20) {
-                process.terminate()
-                throw AppServerClientError.rpc("codex app-server did not respond within 20 seconds.")
-            }
+            try send(["method": "initialized"], to: writer)
+            try send(
+                ["method": "account/read", "id": 2, "params": ["refreshToken": false]],
+                to: writer
+            )
+            try send(["method": "account/rateLimits/read", "id": 3], to: writer)
 
-            let stdout = output.fileHandleForReading.readDataToEndOfFile()
-            let stderr = error.fileHandleForReading.readDataToEndOfFile()
-            if process.terminationStatus != 0 {
-                let message = String(data: stderr, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                throw AppServerClientError.rpc(
-                    message?.isEmpty == false ? message! : "codex app-server exited with status \(process.terminationStatus)."
-                )
-            }
-
-            _ = try response(InitializeResponse.self, from: stdout, expectedID: 1)
-            let account = try response(GetAccountResponse.self, from: stdout, expectedID: 2)
-            let rateLimits = try response(GetAccountRateLimitsResponse.self, from: stdout, expectedID: 3)
+            let account = try waitForResponse(
+                GetAccountResponse.self,
+                expectedID: 2,
+                from: process,
+                stdout: stdoutBuffer,
+                stderr: stderrBuffer,
+                timeout: 20
+            )
+            let rateLimits = try waitForResponse(
+                GetAccountRateLimitsResponse.self,
+                expectedID: 3,
+                from: process,
+                stdout: stdoutBuffer,
+                stderr: stderrBuffer,
+                timeout: 20
+            )
 
             let now = Date()
             return CodexStatusSnapshot(
                 account: StatusMapper.accountDisplay(from: account),
                 limits: StatusMapper.limitDisplays(from: rateLimits, now: now),
+                tokenStats: TokenUsageStatsProvider.load(now: now),
                 refreshedAt: now
             )
         } catch {
@@ -133,6 +136,29 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
             }
             throw AppServerClientError.rpc(error.localizedDescription)
         }
+    }
+
+    private var initializeMessage: [String: Any] {
+        [
+            "method": "initialize",
+            "id": 1,
+            "params": [
+                "clientInfo": [
+                    "name": "codex_token_tracker",
+                    "title": "CodexTokenTracker",
+                    "version": "0.1.0"
+                ],
+                "capabilities": [
+                    "experimentalApi": true,
+                    "optOutNotificationMethods": [
+                        "thread/started",
+                        "item/agentMessage/delta",
+                        "item/started",
+                        "item/completed"
+                    ]
+                ]
+            ]
+        ]
     }
 
     private func send(_ message: [String: Any], to writer: FileHandle) throws {
@@ -167,19 +193,58 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         throw AppServerClientError.noResponse
     }
 
-    private func waitForExit(_ process: Process, timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        return !process.isRunning
-    }
-
     private func terminate(_ process: Process) {
         if process.isRunning {
             process.terminate()
         }
         process.waitUntilExit()
+    }
+
+    private func waitForResponse<T: Decodable>(
+        _ type: T.Type,
+        expectedID: Int,
+        from process: Process,
+        stdout: OutputBuffer,
+        stderr: OutputBuffer,
+        timeout: TimeInterval
+    ) throws -> T {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            do {
+                return try response(type, from: stdout.snapshot, expectedID: expectedID)
+            } catch AppServerClientError.noResponse {
+                if !process.isRunning {
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+
+        let stderrText = String(data: stderr.snapshot, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stdoutText = String(data: stdout.snapshot, encoding: .utf8)?
+            .split(separator: "\n")
+            .suffix(3)
+            .joined(separator: "\n")
+        if !process.isRunning && process.terminationStatus != 0 {
+            throw AppServerClientError.rpc(
+                stderrText?.isEmpty == false
+                    ? stderrText!
+                    : "codex app-server exited with status \(process.terminationStatus)."
+            )
+        }
+
+        let details = [
+            stderrText?.isEmpty == false ? "stderr: \(stderrText!)" : nil,
+            stdoutText?.isEmpty == false ? "last stdout: \(stdoutText!)" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        throw AppServerClientError.rpc(
+            details.isEmpty
+                ? "codex app-server did not return response id \(expectedID) within \(Int(timeout)) seconds."
+                : "codex app-server did not return response id \(expectedID) within \(Int(timeout)) seconds. \(details)"
+        )
     }
 
     public static func defaultCodexURL() -> URL? {
@@ -201,5 +266,22 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         environment["RUST_LOG"] = nil
         environment["LOG_FORMAT"] = nil
         return environment
+    }
+}
+
+private final class OutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    var snapshot: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    func append(_ newData: Data) {
+        lock.lock()
+        data.append(newData)
+        lock.unlock()
     }
 }

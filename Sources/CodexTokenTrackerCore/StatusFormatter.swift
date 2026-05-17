@@ -94,6 +94,32 @@ public enum StatusFormatter {
             .joined(separator: " ")
     }
 
+    public static func compactTokenCount(_ value: Int) -> String {
+        let absoluteValue = abs(value)
+        let sign = value < 0 ? "-" : ""
+        switch absoluteValue {
+        case 0..<1_000:
+            return "\(value)"
+        case 1_000..<1_000_000:
+            return sign + decimalText(Double(absoluteValue) / 1_000) + "K"
+        case 1_000_000..<1_000_000_000:
+            return sign + decimalText(Double(absoluteValue) / 1_000_000) + "M"
+        default:
+            return sign + decimalText(Double(absoluteValue) / 1_000_000_000) + "B"
+        }
+    }
+
+    private static func decimalText(_ value: Double) -> String {
+        if value >= 100 {
+            return "\(Int(value.rounded()))"
+        }
+        let rounded = (value * 10).rounded() / 10
+        if rounded == floor(rounded) {
+            return "\(Int(rounded))"
+        }
+        return String(format: "%.1f", rounded)
+    }
+
     static func creditsText(_ credits: CreditsSnapshotDTO?) -> String? {
         guard let credits, credits.hasCredits else {
             return nil

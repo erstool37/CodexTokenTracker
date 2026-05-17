@@ -12,7 +12,7 @@ struct StatusPopoverView: View {
                 content
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 420)
+            .frame(maxHeight: 500)
             Divider()
             footer
         }
@@ -141,6 +141,9 @@ private struct SnapshotView: View {
                     LimitBucketView(bucket: bucket)
                 }
             }
+            if let tokenStats = snapshot.tokenStats {
+                TokenStatsView(stats: tokenStats)
+            }
             freshness
         }
     }
@@ -212,29 +215,121 @@ private struct LimitWindowView: View {
     let window: LimitWindowDisplay
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack {
+        if window.showsNumericUsage {
+            VStack(spacing: 4) {
+                HStack {
+                    Text(window.label)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(window.percentLeft)% left")
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                }
+                ProgressView(value: Double(window.percentLeft), total: 100)
+                    .progressViewStyle(.linear)
+                    .accessibilityLabel(window.label)
+                    .accessibilityValue("\(window.percentLeft) percent left")
+                if let resetsAtText = window.resetsAtText {
+                    HStack {
+                        Spacer()
+                        Text("resets \(resetsAtText)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .font(.caption)
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: iconName)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(iconColor)
+                    .accessibilityLabel(window.label)
                 Text(window.label)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(window.percentLeft)% left")
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-            }
-            ProgressView(value: Double(window.percentLeft), total: 100)
-                .progressViewStyle(.linear)
-                .accessibilityLabel(window.label)
-                .accessibilityValue("\(window.percentLeft) percent left")
-            if let resetsAtText = window.resetsAtText {
-                HStack {
-                    Spacer()
+                if let resetsAtText = window.resetsAtText {
                     Text("resets \(resetsAtText)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
             }
+            .font(.caption)
+        }
+    }
+
+    private var iconName: String {
+        switch window.percentLeft {
+        case 50...100:
+            return "checkmark.circle"
+        case 1..<50:
+            return "exclamationmark.triangle"
+        default:
+            return "xmark.circle"
+        }
+    }
+
+    private var iconColor: Color {
+        switch window.percentLeft {
+        case 50...100:
+            return .secondary
+        case 1..<50:
+            return .orange
+        default:
+            return .red
+        }
+    }
+}
+
+private struct TokenStatsView: View {
+    let stats: TokenUsageStats
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Token stats")
+                .font(.subheadline.weight(.semibold))
+            TokenStatsPeriodView(period: stats.weekly)
+            TokenStatsPeriodView(period: stats.monthly)
+        }
+        .padding(10)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct TokenStatsPeriodView: View {
+    let period: TokenUsagePeriodStats
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack {
+                Text(period.label)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(StatusFormatter.compactTokenCount(period.usage.totalTokens))
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+            }
+            HStack(spacing: 10) {
+                stat("In", period.usage.inputTokens)
+                stat("Out", period.usage.outputTokens)
+                stat("Reason", period.usage.reasoningOutputTokens)
+                Spacer(minLength: 0)
+                Text("\(period.sessionCount) sessions")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption2)
         }
         .font(.caption)
+    }
+
+    private func stat(_ label: String, _ value: Int) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(StatusFormatter.compactTokenCount(value))
+                .monospacedDigit()
+        }
     }
 }

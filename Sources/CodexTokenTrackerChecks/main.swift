@@ -41,13 +41,49 @@ let json = """
 
 let decoded = try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: json)
 let buckets = StatusMapper.limitDisplays(from: decoded, now: Date(timeIntervalSince1970: 1_700_000_000))
-expect(buckets.count == 2, "all limit buckets should be rendered")
+expect(buckets.count == 1, "Spark/model-specific buckets should be hidden")
 expect(buckets[0].label == "Codex", "codex bucket should be labeled Codex")
 expect(buckets[0].windows.map(\.label) == ["5h limit", "Weekly limit"], "primary and weekly windows should be present")
 expect(buckets[0].windows[0].percentLeft == 75, "primary percent left should be mapped")
+expect(buckets[0].windows[0].showsNumericUsage == false, "5h windows should render as icon-only")
+expect(buckets[0].windows[1].showsNumericUsage == true, "weekly windows should render numeric usage")
 expect(buckets[0].creditsText == "13 credits", "credits should round and render")
-expect(buckets[1].label == "GPT-5.3-Codex-Spark", "model-family bucket label should be preserved")
-expect(buckets[1].windows[0].percentLeft == 90, "additional bucket should be mapped")
 expect(StatusFormatter.displayStatusReason("workspace_owner_credits_depleted") == "Workspace Owner Credits Depleted", "limit reasons should be readable")
+expect(StatusFormatter.compactTokenCount(950) == "950", "small token counts should not be abbreviated")
+expect(StatusFormatter.compactTokenCount(12_430) == "12.4K", "thousands should abbreviate")
+expect(StatusFormatter.compactTokenCount(1_250_000) == "1.3M", "millions should abbreviate")
+expect(StatusFormatter.compactTokenCount(1_576_000_000) == "1.6B", "billions should abbreviate")
+
+let statsNow = Date(timeIntervalSince1970: 1_700_000_000)
+let stats = TokenUsageStatsProvider.stats(from: [
+    TokenUsageSessionRecord(
+        updatedAt: statsNow.addingTimeInterval(-2 * 24 * 60 * 60),
+        usage: TokenUsageBreakdownDisplay(
+            totalTokens: 1_000,
+            inputTokens: 700,
+            cachedInputTokens: 200,
+            outputTokens: 250,
+            reasoningOutputTokens: 50
+        )
+    ),
+    TokenUsageSessionRecord(
+        updatedAt: statsNow.addingTimeInterval(-10 * 24 * 60 * 60),
+        usage: TokenUsageBreakdownDisplay(
+            totalTokens: 2_000,
+            inputTokens: 1_400,
+            cachedInputTokens: 400,
+            outputTokens: 500,
+            reasoningOutputTokens: 100
+        )
+    ),
+    TokenUsageSessionRecord(
+        updatedAt: statsNow.addingTimeInterval(-40 * 24 * 60 * 60),
+        usage: TokenUsageBreakdownDisplay(totalTokens: 4_000)
+    )
+], now: statsNow)
+expect(stats.weekly.sessionCount == 1, "weekly stats should include only last 7 days")
+expect(stats.weekly.usage.totalTokens == 1_000, "weekly stats should sum recent sessions")
+expect(stats.monthly.sessionCount == 2, "monthly stats should include last 30 days")
+expect(stats.monthly.usage.totalTokens == 3_000, "monthly stats should sum 30-day sessions")
 
 print("CodexTokenTracker checks passed")

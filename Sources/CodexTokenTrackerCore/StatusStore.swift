@@ -8,6 +8,7 @@ public final class StatusStore: ObservableObject {
     private let provider: StatusProviding
     private var refreshTask: Task<Void, Never>?
     private var staleTicker: Task<Void, Never>?
+    private var refreshTicker: Task<Void, Never>?
 
     public init(provider: StatusProviding = AppServerStatusProvider()) {
         self.provider = provider
@@ -17,11 +18,18 @@ public final class StatusStore: ObservableObject {
                 self?.objectWillChange.send()
             }
         }
+        refreshTicker = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                self?.refresh()
+            }
+        }
     }
 
     deinit {
         refreshTask?.cancel()
         staleTicker?.cancel()
+        refreshTicker?.cancel()
     }
 
     public var currentSnapshot: CodexStatusSnapshot? {
