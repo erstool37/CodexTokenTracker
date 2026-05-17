@@ -116,32 +116,45 @@ public enum TokenUsageStatsProvider {
         }
 
         let decoder = JSONDecoder()
-        var latest: TokenUsageSessionRecord?
-        var buffer = Data()
+        guard var offset = try? handle.seekToEnd() else {
+            return nil
+        }
+        var suffix = Data()
 
-        while true {
-            guard let chunk = try? handle.read(upToCount: 64 * 1024) else {
+        while offset > 0 {
+            let readSize = min(64 * 1024, Int(offset))
+            offset -= UInt64(readSize)
+            do {
+                try handle.seek(toOffset: offset)
+            } catch {
                 break
             }
-            if chunk.isEmpty {
+            guard var chunk = try? handle.read(upToCount: readSize), !chunk.isEmpty else {
                 break
             }
-            buffer.append(chunk)
+            chunk.append(suffix)
 
-            while let newlineRange = buffer.firstRange(of: newlineData) {
-                let line = buffer.subdata(in: buffer.startIndex..<newlineRange.lowerBound)
-                buffer.removeSubrange(buffer.startIndex..<newlineRange.upperBound)
+            var searchEnd = chunk.endIndex
+            while let newlineRange = chunk.range(
+                of: newlineData,
+                options: .backwards,
+                in: chunk.startIndex..<searchEnd
+            ) {
+                let line = chunk.subdata(in: newlineRange.upperBound..<searchEnd)
                 if let record = tokenUsageRecord(from: line, decoder: decoder) {
-                    latest = record
+                    return record
                 }
+                searchEnd = newlineRange.lowerBound
             }
+
+            suffix = chunk.subdata(in: chunk.startIndex..<searchEnd)
         }
 
-        if !buffer.isEmpty, let record = tokenUsageRecord(from: buffer, decoder: decoder) {
-            latest = record
+        if !suffix.isEmpty, let record = tokenUsageRecord(from: suffix, decoder: decoder) {
+            return record
         }
 
-        return latest
+        return nil
     }
 
     private static func tokenUsageRecord(from line: Data, decoder: JSONDecoder) -> TokenUsageSessionRecord? {

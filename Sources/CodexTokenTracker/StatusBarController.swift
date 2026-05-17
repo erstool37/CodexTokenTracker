@@ -12,7 +12,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
     init(store: StatusStore) {
         self.store = store
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.popover = NSPopover()
         super.init()
 
@@ -33,13 +33,14 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             accessibilityDescription: "CodexTokenTracker"
         )
         button.image?.isTemplate = true
-        button.imagePosition = .imageLeading
+        button.imagePosition = .imageOnly
+        button.title = ""
         button.toolTip = "CodexTokenTracker"
     }
 
     private func configurePopover() {
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 360, height: 440)
+        popover.contentSize = NSSize(width: 360, height: 360)
         popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: StatusPopoverView(store: store)
@@ -65,18 +66,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         button.image?.isTemplate = true
 
         if store.isRefreshing && store.currentSnapshot == nil {
-            button.title = " Codex..."
+            button.title = ""
             button.contentTintColor = nil
+            button.toolTip = "CodexTokenTracker - refreshing"
             return
         }
 
-        if let percent = store.currentSnapshot?.bestRemainingPercent {
-            button.title = " Codex \(percent)%"
-        } else if store.hasError {
-            button.title = " Codex !"
-        } else {
-            button.title = " Codex"
-        }
+        button.title = ""
 
         if store.hasError {
             button.contentTintColor = .systemOrange

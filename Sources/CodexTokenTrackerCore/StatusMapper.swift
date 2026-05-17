@@ -112,7 +112,7 @@ public enum StatusMapper {
             percentUsed: window.usedPercent,
             percentLeft: left,
             resetsAtText: StatusFormatter.resetText(secondsSince1970: window.resetsAt, now: now),
-            showsNumericUsage: window.windowDurationMins != 300
+            showsNumericUsage: true
         )
     }
 

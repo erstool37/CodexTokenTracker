@@ -5,8 +5,8 @@ This repository builds a macOS menu bar widget that mirrors the Codex `/status` 
 ## Product Contract
 
 - The app must be usable by double-clicking `CodexTokenTracker.app`.
-- The menu bar item must show Codex token/status information without requiring Terminal.
-- The popover must expose the same substantive information as Codex `/status`: account/login state, plan/model context where available, token usage, rate-limit windows, reset timing, and any reached-limit/error state.
+- The menu bar item must stay minimal and open Codex token/status information without requiring Terminal.
+- The popover must expose the same substantive usage information as Codex `/status`: token usage, rate-limit windows, reset timing, and any reached-limit/error state. Account identity and plan text may be omitted when the user asks for a cleaner widget.
 - The app must stay minimal and native-feeling on macOS, following Apple menu bar and popover conventions.
 - The icon must be minimal, template-friendly, and legible in light/dark menu bar modes.
 - Refresh behavior must be accurate, visible, and bounded: refresh on launch, refresh when opened, refresh periodically, and mark stale/error states clearly.
@@ -34,7 +34,7 @@ Use a builder subagent for implementation work when the scope is not a small loc
 
 Use a QA subagent before final completion and after any launch/usability fix. The QA agent must check the built artifact, not only source files, and return Pass/Fail with evidence against this checklist:
 
-1. Identical information: the widget shows the same substantive account, token, limit, reset, and error information exposed by Codex `/status` or the closest available app-server status source.
+1. Identical information: the widget shows the same substantive token, limit, reset, and error information exposed by Codex `/status` or the closest available app-server status source, excluding account identity when intentionally hidden.
 2. Apple UI fit: the menu bar, popover, spacing, typography, colors, and state handling are neat and consistent with Apple menu bar app conventions.
 3. Minimal icon: the app bundle includes a small, readable, template-friendly icon.
 4. Refresh correctness: launch, open, manual, periodic, stale, and error refresh states behave correctly.

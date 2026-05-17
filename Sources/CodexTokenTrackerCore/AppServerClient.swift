@@ -167,30 +167,26 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         writer.write(Data([0x0A]))
     }
 
-    private func response<T: Decodable>(_ type: T.Type, from data: Data, expectedID: Int) throws -> T {
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw AppServerClientError.decode("stdout was not valid UTF-8")
+    private func responseLine<T: Decodable>(_ type: T.Type, from line: Data, expectedID: Int) throws -> T? {
+        guard !line.isEmpty else {
+            return nil
         }
-        for lineText in text.split(separator: "\n") {
-            let line = Data(lineText.utf8)
-            let response: RPCResponse<T>
-            do {
-                response = try decoder.decode(RPCResponse<T>.self, from: line)
-            } catch {
-                continue
-            }
-            guard response.id == expectedID else {
-                continue
-            }
-            if let error = response.error {
-                throw AppServerClientError.rpc(error.description)
-            }
-            guard let result = response.result else {
-                throw AppServerClientError.noResponse
-            }
-            return result
+        let response: RPCResponse<T>
+        do {
+            response = try decoder.decode(RPCResponse<T>.self, from: line)
+        } catch {
+            return nil
         }
-        throw AppServerClientError.noResponse
+        guard response.id == expectedID else {
+            return nil
+        }
+        if let error = response.error {
+            throw AppServerClientError.rpc(error.description)
+        }
+        guard let result = response.result else {
+            throw AppServerClientError.noResponse
+        }
+        return result
     }
 
     private func terminate(_ process: Process) {
@@ -209,15 +205,28 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         timeout: TimeInterval
     ) throws -> T {
         let deadline = Date().addingTimeInterval(timeout)
+        var readOffset = 0
+        var pendingLine = Data()
         while Date() < deadline {
-            do {
-                return try response(type, from: stdout.snapshot, expectedID: expectedID)
-            } catch AppServerClientError.noResponse {
-                if !process.isRunning {
-                    break
+            let update = stdout.snapshot(startingAt: readOffset)
+            readOffset = update.endOffset
+            if !update.data.isEmpty {
+                pendingLine.append(update.data)
+                while let newlineRange = pendingLine.firstRange(of: Data([0x0A])) {
+                    let line = pendingLine.subdata(in: pendingLine.startIndex..<newlineRange.lowerBound)
+                    pendingLine.removeSubrange(pendingLine.startIndex..<newlineRange.upperBound)
+                    if let response = try responseLine(type, from: line, expectedID: expectedID) {
+                        return response
+                    }
                 }
-                Thread.sleep(forTimeInterval: 0.05)
             }
+            if !process.isRunning {
+                if let response = try responseLine(type, from: pendingLine, expectedID: expectedID) {
+                    return response
+                }
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
         }
 
         let stderrText = String(data: stderr.snapshot, encoding: .utf8)?
@@ -277,6 +286,17 @@ private final class OutputBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return data
+    }
+
+    func snapshot(startingAt offset: Int) -> (data: Data, endOffset: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let safeOffset = min(max(offset, 0), data.count)
+        return (
+            data: data.subdata(in: safeOffset..<data.count),
+            endOffset: data.count
+        )
     }
 
     func append(_ newData: Data) {

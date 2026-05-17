@@ -6,53 +6,13 @@ struct StatusPopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
-            Divider()
-            ScrollView {
-                content
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 500)
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
             Divider()
             footer
         }
         .padding(16)
         .frame(width: 360)
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "gauge.with.needle")
-                .font(.system(size: 18, weight: .medium))
-                .symbolRenderingMode(.monochrome)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("CodexTokenTracker")
-                    .font(.headline)
-                Text(headerSubtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            if store.isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var headerSubtitle: String {
-        if store.stale {
-            return "Stale"
-        }
-        if store.isRefreshing {
-            return "Refreshing"
-        }
-        if store.currentSnapshot != nil {
-            return "Current"
-        }
-        return "Unavailable"
     }
 
     @ViewBuilder
@@ -74,7 +34,7 @@ struct StatusPopoverView: View {
 
     private var loadingView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Loading account status")
+            Text("Loading Codex status")
                 .font(.subheadline)
             Text("Waiting for codex app-server.")
                 .font(.caption)
@@ -121,8 +81,7 @@ private struct SnapshotView: View {
     let stale: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            accountSection
+        VStack(alignment: .leading, spacing: 10) {
             if snapshot.limits.isEmpty {
                 Text("No rate-limit data returned.")
                     .font(.caption)
@@ -136,18 +95,6 @@ private struct SnapshotView: View {
                 TokenStatsView(stats: tokenStats)
             }
             freshness
-        }
-    }
-
-    private var accountSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(snapshot.account.title)
-                .font(.subheadline.weight(.semibold))
-                .textSelection(.enabled)
-            Text(snapshot.account.subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
         }
     }
 
@@ -278,22 +225,31 @@ private struct TokenStatsView: View {
     let stats: TokenUsageStats
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Token stats")
-                .font(.subheadline.weight(.semibold))
-            TokenStatsPeriodView(period: stats.weekly)
-            TokenStatsPeriodView(period: stats.monthly)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Token stats")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                TokenStatsLegend()
+            }
+            TokenStatsPeriodView(period: stats.weekly, maxTotal: maxTotal)
+            TokenStatsPeriodView(period: stats.monthly, maxTotal: maxTotal)
         }
         .padding(10)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var maxTotal: Int {
+        max(stats.weekly.usage.totalTokens, stats.monthly.usage.totalTokens, 1)
     }
 }
 
 private struct TokenStatsPeriodView: View {
     let period: TokenUsagePeriodStats
+    let maxTotal: Int
 
     var body: some View {
-        VStack(spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(period.label)
                     .foregroundStyle(.secondary)
@@ -311,6 +267,7 @@ private struct TokenStatsPeriodView: View {
                     .foregroundStyle(.secondary)
             }
             .font(.caption2)
+            TokenUsageBarView(usage: period.usage, maxTotal: maxTotal)
         }
         .font(.caption)
     }
@@ -321,6 +278,83 @@ private struct TokenStatsPeriodView: View {
                 .foregroundStyle(.secondary)
             Text(StatusFormatter.compactTokenCount(value))
                 .monospacedDigit()
+        }
+    }
+}
+
+private struct TokenStatsLegend: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            legendItem("In", .blue)
+            legendItem("Out", .teal)
+            legendItem("Reason", .orange)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+
+    private func legendItem(_ label: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(label)
+        }
+    }
+}
+
+private struct TokenUsageBarView: View {
+    let usage: TokenUsageBreakdownDisplay
+    let maxTotal: Int
+
+    var body: some View {
+        GeometryReader { proxy in
+            let availableWidth = proxy.size.width
+            let total = max(usage.totalTokens, segmentTotal)
+            let filledWidth = availableWidth * CGFloat(min(Double(total) / Double(max(maxTotal, 1)), 1.0))
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.14))
+                HStack(spacing: 0) {
+                    segment(inputTokens, color: .blue, width: filledWidth)
+                    segment(outputTokens, color: .teal, width: filledWidth)
+                    segment(reasoningTokens, color: .orange, width: filledWidth)
+                }
+                .frame(width: filledWidth, height: 8, alignment: .leading)
+                .clipShape(Capsule())
+            }
+        }
+        .frame(height: 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Token mix")
+        .accessibilityValue(
+            "Input \(StatusFormatter.compactTokenCount(usage.inputTokens)), output \(StatusFormatter.compactTokenCount(usage.outputTokens)), reasoning \(StatusFormatter.compactTokenCount(usage.reasoningOutputTokens))"
+        )
+    }
+
+    private var inputTokens: Int {
+        max(usage.inputTokens, 0)
+    }
+
+    private var outputTokens: Int {
+        max(usage.outputTokens - usage.reasoningOutputTokens, 0)
+    }
+
+    private var reasoningTokens: Int {
+        max(usage.reasoningOutputTokens, 0)
+    }
+
+    private var segmentTotal: Int {
+        max(inputTokens + outputTokens + reasoningTokens, 1)
+    }
+
+    @ViewBuilder
+    private func segment(_ value: Int, color: Color, width: CGFloat) -> some View {
+        if value > 0 {
+            Rectangle()
+                .fill(color)
+                .frame(width: width * CGFloat(value) / CGFloat(segmentTotal))
         }
     }
 }
