@@ -1,5 +1,8 @@
 import CodexTokenTrackerCore
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {
@@ -53,6 +56,26 @@ expect(StatusFormatter.compactTokenCount(950) == "950", "small token counts shou
 expect(StatusFormatter.compactTokenCount(12_430) == "12.4K", "thousands should abbreviate")
 expect(StatusFormatter.compactTokenCount(1_250_000) == "1.3M", "millions should abbreviate")
 expect(StatusFormatter.compactTokenCount(1_576_000_000) == "1.6B", "billions should abbreviate")
+
+#if canImport(AppKit)
+let appearancePolicy = StatusBarAppearanceRefreshPolicy.menuBar
+expect(
+    appearancePolicy.applicationNotificationNames.contains(NSApplication.didChangeScreenParametersNotification),
+    "menu bar icon should refresh when screen/menu bar parameters change"
+)
+expect(
+    appearancePolicy.applicationNotificationNames.contains(NSApplication.didBecomeActiveNotification),
+    "menu bar icon should refresh when the app becomes active"
+)
+expect(
+    appearancePolicy.workspaceNotificationNames.contains(NSWorkspace.activeSpaceDidChangeNotification),
+    "menu bar icon should refresh when switching full-screen spaces"
+)
+expect(
+    appearancePolicy.deferredRefreshDelays == [0.05, 0.25],
+    "menu bar icon should schedule bounded delayed redraws after appearance changes"
+)
+#endif
 
 let statsNow = Date(timeIntervalSince1970: 1_700_000_000)
 var statsCalendar = Calendar(identifier: .gregorian)

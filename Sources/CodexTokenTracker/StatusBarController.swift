@@ -11,7 +11,9 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let store: StatusStore
+    private let appearanceRefreshPolicy = StatusBarAppearanceRefreshPolicy.menuBar
     private var cancellables: Set<AnyCancellable> = []
+    private var currentSymbolName = "gauge.with.needle"
 
     init(store: StatusStore) {
         self.store = store
@@ -22,7 +24,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         configureStatusItem()
         configurePopover()
         bindStore()
+        bindAppearanceRefresh()
         updateStatusItem()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     private func configureStatusItem() {
@@ -31,11 +39,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
         button.action = #selector(togglePopover(_:))
         button.target = self
-        button.image = NSImage(
-            systemSymbolName: "gauge.with.needle",
-            accessibilityDescription: "CodexTokenTracker"
-        )
-        button.image?.isTemplate = true
+        setStatusImage(symbolName: currentSymbolName)
         button.imagePosition = .imageOnly
         button.title = ""
         button.toolTip = "CodexTokenTracker"
@@ -59,14 +63,34 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             .store(in: &cancellables)
     }
 
+    private func bindAppearanceRefresh() {
+        for notificationName in appearanceRefreshPolicy.applicationNotificationNames {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleAppearanceRefreshNotification(_:)),
+                name: notificationName,
+                object: nil
+            )
+        }
+
+        for notificationName in appearanceRefreshPolicy.workspaceNotificationNames {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self,
+                selector: #selector(handleAppearanceRefreshNotification(_:)),
+                name: notificationName,
+                object: nil
+            )
+        }
+    }
+
     private func updateStatusItem() {
         guard let button = statusItem.button else {
             return
         }
 
         let symbolName = store.hasError ? "exclamationmark.triangle" : "gauge.with.needle"
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "CodexTokenTracker")
-        button.image?.isTemplate = true
+        currentSymbolName = symbolName
+        setStatusImage(symbolName: symbolName)
 
         if store.isRefreshing && store.currentSnapshot == nil {
             button.title = ""
@@ -89,6 +113,39 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
     }
 
+    private func setStatusImage(symbolName: String) {
+        guard let button = statusItem.button else {
+            return
+        }
+
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "CodexTokenTracker")
+        image?.isTemplate = true
+        button.image = image
+        button.needsDisplay = true
+    }
+
+    private func refreshStatusIconAppearance() {
+        guard let button = statusItem.button else {
+            return
+        }
+
+        setStatusImage(symbolName: currentSymbolName)
+        button.needsDisplay = true
+        button.window?.displayIfNeeded()
+    }
+
+    private func scheduleAppearanceRefresh() {
+        refreshStatusIconAppearance()
+
+        for delay in appearanceRefreshPolicy.deferredRefreshDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                Task { @MainActor in
+                    self?.refreshStatusIconAppearance()
+                }
+            }
+        }
+    }
+
     func showPopover() {
         guard let button = statusItem.button else {
             return
@@ -106,6 +163,10 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
                 self.framePopoverInsideScreen(relativeTo: button)
             }
         }
+    }
+
+    @objc private func handleAppearanceRefreshNotification(_ notification: Notification) {
+        scheduleAppearanceRefresh()
     }
 
     @objc private func togglePopover(_ sender: AnyObject?) {
