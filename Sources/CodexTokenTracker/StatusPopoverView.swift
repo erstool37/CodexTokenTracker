@@ -165,6 +165,7 @@ private struct LimitWindowView: View {
                 }
                 ProgressView(value: Double(window.percentLeft), total: 100)
                     .progressViewStyle(.linear)
+                    .tint(window.warningLevel.progressColor)
                     .accessibilityLabel(window.label)
                     .accessibilityValue("\(window.percentLeft) percent left")
                 if let resetsAtText = window.resetsAtText {
@@ -178,6 +179,7 @@ private struct LimitWindowView: View {
                 }
             }
             .font(.caption)
+            .foregroundStyle(window.warningLevel.textColor)
         } else {
             HStack(spacing: 8) {
                 Image(systemName: iconName)
@@ -216,6 +218,30 @@ private struct LimitWindowView: View {
         case 1..<50:
             return .orange
         default:
+            return .red
+        }
+    }
+}
+
+private extension LimitWarningLevel {
+    var progressColor: Color {
+        switch self {
+        case .normal:
+            return .accentColor
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        }
+    }
+
+    var textColor: Color {
+        switch self {
+        case .normal:
+            return .primary
+        case .warning:
+            return .orange
+        case .critical:
             return .red
         }
     }

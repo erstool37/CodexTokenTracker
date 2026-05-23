@@ -101,9 +101,14 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
         button.title = ""
 
+        let warningLevel = store.currentSnapshot?.mostSevereLimitWarningLevel ?? .normal
+
         if store.hasError {
             button.contentTintColor = .systemOrange
             button.toolTip = "CodexTokenTracker - refresh failed: \(store.errorMessage ?? "unknown error")"
+        } else if warningLevel != .normal {
+            button.contentTintColor = warningLevel.statusItemTintColor
+            button.toolTip = "CodexTokenTracker - \(warningLevel.statusItemTooltip)"
         } else if store.stale {
             button.contentTintColor = .systemOrange
             button.toolTip = "CodexTokenTracker - stale data"
@@ -231,5 +236,29 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             width: screen.visibleFrame.width,
             height: max(1, top - screen.visibleFrame.minY)
         )
+    }
+}
+
+private extension LimitWarningLevel {
+    var statusItemTintColor: NSColor? {
+        switch self {
+        case .normal:
+            return nil
+        case .warning:
+            return .systemOrange
+        case .critical:
+            return .systemRed
+        }
+    }
+
+    var statusItemTooltip: String {
+        switch self {
+        case .normal:
+            return "limits healthy"
+        case .warning:
+            return "a token limit is below 10%"
+        case .critical:
+            return "a token limit is below 5%"
+        }
     }
 }

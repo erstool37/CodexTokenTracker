@@ -28,6 +28,13 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
             .min()
     }
 
+    public var mostSevereLimitWarningLevel: LimitWarningLevel {
+        limits.flatMap(\.windows)
+            .filter(\.showsNumericUsage)
+            .map(\.warningLevel)
+            .max() ?? .normal
+    }
+
     public var hasCredits: Bool {
         limits.contains { $0.creditsText != nil }
     }
@@ -99,6 +106,30 @@ public struct LimitWindowDisplay: Identifiable, Equatable, Sendable {
         self.percentLeft = percentLeft
         self.resetsAtText = resetsAtText
         self.showsNumericUsage = showsNumericUsage
+    }
+
+    public var warningLevel: LimitWarningLevel {
+        LimitWarningLevel(percentLeft: percentLeft)
+    }
+}
+
+public enum LimitWarningLevel: Int, Comparable, Sendable {
+    case normal
+    case warning
+    case critical
+
+    public init(percentLeft: Int) {
+        if percentLeft <= 5 {
+            self = .critical
+        } else if percentLeft <= 10 {
+            self = .warning
+        } else {
+            self = .normal
+        }
+    }
+
+    public static func < (lhs: LimitWarningLevel, rhs: LimitWarningLevel) -> Bool {
+        lhs.rawValue < rhs.rawValue
     }
 }
 

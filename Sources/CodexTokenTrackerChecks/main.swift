@@ -50,6 +50,40 @@ expect(buckets[0].windows.map(\.label) == ["5h limit", "Weekly limit"], "primary
 expect(buckets[0].windows[0].percentLeft == 75, "primary percent left should be mapped")
 expect(buckets[0].windows[0].showsNumericUsage == true, "5h windows should render numeric usage")
 expect(buckets[0].windows[1].showsNumericUsage == true, "weekly windows should render numeric usage")
+expect(LimitWarningLevel(percentLeft: 11) == .normal, "limits above 10% remaining should stay normal")
+expect(LimitWarningLevel(percentLeft: 10) == .warning, "limits at 10% remaining should warn")
+expect(LimitWarningLevel(percentLeft: 5) == .critical, "limits at 5% remaining should be critical")
+expect(LimitWarningLevel(percentLeft: 0) == .critical, "depleted limits should be critical")
+expect(buckets[0].windows[0].warningLevel == .normal, "5h window should expose its warning level")
+expect(buckets[0].windows[1].warningLevel == .normal, "weekly window should expose its warning level")
+let warningSnapshot = CodexStatusSnapshot(
+    account: AccountDisplay(kind: "ChatGPT", email: nil, plan: nil, requiresOpenAIAuth: false),
+    limits: [
+        LimitBucketDisplay(
+            id: "codex",
+            label: "Codex",
+            windows: [
+                LimitWindowDisplay(
+                    id: "5h",
+                    label: "5h limit",
+                    percentUsed: 90,
+                    percentLeft: 10,
+                    resetsAtText: nil
+                ),
+                LimitWindowDisplay(
+                    id: "weekly",
+                    label: "Weekly limit",
+                    percentUsed: 96,
+                    percentLeft: 4,
+                    resetsAtText: nil
+                )
+            ],
+            creditsText: nil
+        )
+    ],
+    refreshedAt: Date(timeIntervalSince1970: 1_700_000_000)
+)
+expect(warningSnapshot.mostSevereLimitWarningLevel == .critical, "snapshot should use the lowest remaining limit warning")
 expect(buckets[0].creditsText == "13 credits", "credits should round and render")
 expect(StatusFormatter.displayStatusReason("workspace_owner_credits_depleted") == "Workspace Owner Credits Depleted", "limit reasons should be readable")
 expect(StatusFormatter.compactTokenCount(950) == "950", "small token counts should not be abbreviated")
