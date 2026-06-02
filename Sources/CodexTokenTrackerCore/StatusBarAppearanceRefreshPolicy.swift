@@ -6,15 +6,18 @@ public struct StatusBarAppearanceRefreshPolicy: Equatable, Sendable {
     public var applicationNotificationNames: [Notification.Name]
     public var workspaceNotificationNames: [Notification.Name]
     public var deferredRefreshDelays: [TimeInterval]
+    public var usesFixedWhiteIcon: Bool
 
     public init(
         applicationNotificationNames: [Notification.Name],
         workspaceNotificationNames: [Notification.Name],
-        deferredRefreshDelays: [TimeInterval]
+        deferredRefreshDelays: [TimeInterval],
+        usesFixedWhiteIcon: Bool
     ) {
         self.applicationNotificationNames = applicationNotificationNames
         self.workspaceNotificationNames = workspaceNotificationNames
         self.deferredRefreshDelays = deferredRefreshDelays
+        self.usesFixedWhiteIcon = usesFixedWhiteIcon
     }
 
     public static let menuBar = StatusBarAppearanceRefreshPolicy(
@@ -25,7 +28,8 @@ public struct StatusBarAppearanceRefreshPolicy: Equatable, Sendable {
         workspaceNotificationNames: [
             NSWorkspace.activeSpaceDidChangeNotification
         ],
-        deferredRefreshDelays: [0.05, 0.25]
+        deferredRefreshDelays: [0.05, 0.25],
+        usesFixedWhiteIcon: false
     )
 }
 #endif

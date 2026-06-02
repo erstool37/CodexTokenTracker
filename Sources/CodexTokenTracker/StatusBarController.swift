@@ -94,26 +94,23 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
         if store.isRefreshing && store.currentSnapshot == nil {
             button.title = ""
-            button.contentTintColor = nil
+            applyStatusItemTint()
             button.toolTip = "CodexTokenTracker - refreshing"
             return
         }
 
         button.title = ""
+        applyStatusItemTint()
 
         let warningLevel = store.currentSnapshot?.mostSevereLimitWarningLevel ?? .normal
 
         if store.hasError {
-            button.contentTintColor = .systemOrange
             button.toolTip = "CodexTokenTracker - refresh failed: \(store.errorMessage ?? "unknown error")"
         } else if warningLevel != .normal {
-            button.contentTintColor = warningLevel.statusItemTintColor
             button.toolTip = "CodexTokenTracker - \(warningLevel.statusItemTooltip)"
         } else if store.stale {
-            button.contentTintColor = .systemOrange
             button.toolTip = "CodexTokenTracker - stale data"
         } else {
-            button.contentTintColor = nil
             button.toolTip = "CodexTokenTracker"
         }
     }
@@ -126,7 +123,16 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "CodexTokenTracker")
         image?.isTemplate = true
         button.image = image
+        applyStatusItemTint()
         button.needsDisplay = true
+    }
+
+    private func applyStatusItemTint() {
+        guard let button = statusItem.button else {
+            return
+        }
+
+        button.contentTintColor = appearanceRefreshPolicy.usesFixedWhiteIcon ? .white : nil
     }
 
     private func refreshStatusIconAppearance() {
@@ -240,17 +246,6 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 }
 
 private extension LimitWarningLevel {
-    var statusItemTintColor: NSColor? {
-        switch self {
-        case .normal:
-            return nil
-        case .warning:
-            return .systemOrange
-        case .critical:
-            return .systemRed
-        }
-    }
-
     var statusItemTooltip: String {
         switch self {
         case .normal:

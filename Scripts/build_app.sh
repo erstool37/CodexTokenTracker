@@ -9,6 +9,7 @@ ROOT_APP_DIR="$ROOT_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+SWIFT_MODULE_CACHE_DIR="$ROOT_DIR/.swiftpm-cache/clang-module-cache"
 
 cd "$ROOT_DIR"
 swift build \
@@ -19,12 +20,12 @@ swift build \
   -c "$CONFIGURATION"
 
 rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$SWIFT_MODULE_CACHE_DIR"
 
 cp ".build/$CONFIGURATION/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 cp "AppBundle/Info.plist" "$CONTENTS_DIR/Info.plist"
 printf "APPL????" > "$CONTENTS_DIR/PkgInfo"
-swift "Scripts/make_icon.swift" "$RESOURCES_DIR/$APP_NAME.icns"
+swift -module-cache-path "$SWIFT_MODULE_CACHE_DIR" "Scripts/make_icon.swift" "$RESOURCES_DIR/$APP_NAME.icns"
 
 chmod +x "$MACOS_DIR/$APP_NAME"
 codesign --force --deep --sign - "$APP_DIR"

@@ -109,6 +109,10 @@ expect(
     appearancePolicy.deferredRefreshDelays == [0.05, 0.25],
     "menu bar icon should schedule bounded delayed redraws after appearance changes"
 )
+expect(
+    !appearancePolicy.usesFixedWhiteIcon,
+    "menu bar icon should use the adaptive system template tint"
+)
 #endif
 
 let statsNow = Date(timeIntervalSince1970: 1_700_000_000)
