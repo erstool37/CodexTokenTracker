@@ -104,6 +104,7 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                 to: writer
             )
             try send(["method": "account/rateLimits/read", "id": 3], to: writer)
+            try send(["method": "account/usage/read", "id": 4], to: writer)
 
             let account = try waitForResponse(
                 GetAccountResponse.self,
@@ -121,12 +122,39 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                 stderr: stderrBuffer,
                 timeout: 20
             )
+            let usageResult: Result<GetAccountTokenUsageResponse, Error>
+            do {
+                let usage = try waitForResponse(
+                    GetAccountTokenUsageResponse.self,
+                    expectedID: 4,
+                    from: process,
+                    stdout: stdoutBuffer,
+                    stderr: stderrBuffer,
+                    timeout: 12
+                )
+                usageResult = .success(usage)
+            } catch {
+                usageResult = .failure(error)
+            }
 
+            let accountDisplay = StatusMapper.accountDisplay(from: account)
             let now = Date()
+            let onlineTokenStats: TokenUsageStats?
+            let onlineTokenStatsError: String?
+            switch usageResult {
+            case let .success(usage):
+                onlineTokenStats = AccountUsageStatsProvider.stats(from: usage, now: now)
+                onlineTokenStatsError = nil
+            case let .failure(error):
+                onlineTokenStats = nil
+                onlineTokenStatsError = error.localizedDescription
+            }
             return CodexStatusSnapshot(
-                account: StatusMapper.accountDisplay(from: account),
+                account: accountDisplay,
                 limits: StatusMapper.limitDisplays(from: rateLimits, now: now),
-                tokenStats: TokenUsageStatsProvider.load(now: now),
+                onlineTokenStats: onlineTokenStats,
+                onlineTokenStatsError: onlineTokenStatsError,
+                tokenStats: TokenUsageStatsProvider.load(for: accountDisplay, now: now),
                 refreshedAt: now
             )
         } catch {

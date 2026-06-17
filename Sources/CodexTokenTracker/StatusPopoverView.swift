@@ -11,7 +11,7 @@ struct StatusPopoverView: View {
             Divider()
             footer
         }
-        .padding(12)
+        .padding(10)
         .frame(width: 340)
     }
 
@@ -91,8 +91,12 @@ private struct SnapshotView: View {
                     LimitBucketView(bucket: bucket)
                 }
             }
-            if let tokenStats = snapshot.tokenStats {
-                TokenStatsView(stats: tokenStats)
+            if snapshot.onlineTokenStats != nil || snapshot.onlineTokenStatsError != nil || snapshot.tokenStats != nil {
+                TokenStatsComparisonView(
+                    onlineTokenStats: snapshot.onlineTokenStats,
+                    onlineUnavailable: snapshot.onlineTokenStatsError != nil,
+                    localTokenStats: snapshot.tokenStats
+                )
             }
             freshness
         }
@@ -247,34 +251,102 @@ private extension LimitWarningLevel {
     }
 }
 
-private struct TokenStatsView: View {
-    let stats: TokenUsageStats
+private struct TokenStatsComparisonView: View {
+    let onlineTokenStats: TokenUsageStats?
+    let onlineUnavailable: Bool
+    let localTokenStats: TokenUsageStats?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Token stats")
-                .font(.subheadline.weight(.semibold))
-            TokenStatsPeriodView(period: stats.today)
-            TokenStatsPeriodView(period: stats.weekly)
-            TokenStatsPeriodView(period: stats.monthly)
+        HStack(alignment: .top, spacing: 4) {
+            if let onlineTokenStats {
+                CompactTokenStatsView(title: "Online", stats: onlineTokenStats)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            } else if onlineUnavailable {
+                CompactTokenStatsUnavailableView()
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+
+            if let localTokenStats {
+                LocalTokenSummaryView(stats: localTokenStats)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
         }
-        .padding(8)
+    }
+}
+
+private struct CompactTokenStatsUnavailableView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Online")
+                .font(.subheadline.weight(.semibold))
+            HStack(alignment: .firstTextBaseline) {
+                Text("Status")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Unavailable")
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
+        .padding(5)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
-private struct TokenStatsPeriodView: View {
-    let period: TokenUsagePeriodStats
+private struct CompactTokenStatsView: View {
+    let title: String
+    let stats: TokenUsageStats
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            ForEach(stats.periods, id: \.label) { period in
+                CompactTokenRow(label: compactPeriodLabel(period.label), tokens: period.usage.totalTokens)
+            }
+        }
+        .padding(5)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func compactPeriodLabel(_ label: String) -> String {
+        switch label {
+        case "Today":
+            return "T"
+        case "7 days":
+            return "7d"
+        case "28 days":
+            return "28d"
+        default:
+            return label
+        }
+    }
+}
+
+private struct LocalTokenSummaryView: View {
+    let stats: TokenUsageStats
+
+    var body: some View {
+        CompactTokenStatsView(title: "Device", stats: stats)
+    }
+}
+
+private struct CompactTokenRow: View {
+    let label: String
+    let tokens: Int
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(period.label)
+            Text(label)
                 .foregroundStyle(.secondary)
             Spacer()
-            Text(StatusFormatter.compactTokenCount(period.usage.totalTokens))
+            Text(StatusFormatter.compactTokenCount(tokens))
                 .fontWeight(.semibold)
                 .monospacedDigit()
+                .textSelection(.enabled)
         }
-        .font(.caption)
+        .font(.caption2)
     }
 }

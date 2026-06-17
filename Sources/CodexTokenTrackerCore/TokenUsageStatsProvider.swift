@@ -8,7 +8,25 @@ public enum TokenUsageStatsProvider {
         now: Date = Date()
     ) -> TokenUsageStats {
         let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
-        return stats(from: sessionRecords(in: codexHome, modifiedSince: monthStart), now: now)
+        let records = sessionRecords(in: codexHome, modifiedSince: monthStart)
+        return stats(from: records, now: now)
+    }
+
+    public static func load(
+        for account: AccountDisplay,
+        codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
+        ledgerURL: URL = AccountTokenUsageLedgerStore.defaultLedgerURL(),
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> TokenUsageStats {
+        let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
+        let records = sessionRecords(in: codexHome, modifiedSince: monthStart)
+        return AccountTokenUsageLedgerStore(url: ledgerURL).stats(
+            for: account,
+            records: records,
+            now: now,
+            calendar: calendar
+        )
     }
 
     public static func stats(
@@ -61,7 +79,7 @@ public enum TokenUsageStatsProvider {
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) else {
             return []
         }
@@ -80,22 +98,18 @@ public enum TokenUsageStatsProvider {
                 modifiedAt: metadata.modifiedAt,
                 size: metadata.size
             ) {
-                if let record = cached {
-                    records.append(record)
-                }
+                records.append(contentsOf: cached)
                 continue
             }
 
-            let record = sessionRecord(from: fileURL)
+            let fileRecords = sessionRecords(from: fileURL)
             cache.store(
-                record,
+                fileRecords,
                 for: fileURL.path,
                 modifiedAt: metadata.modifiedAt,
                 size: metadata.size
             )
-            if let record {
-                records.append(record)
-            }
+            records.append(contentsOf: fileRecords)
         }
         return records
     }
@@ -115,57 +129,62 @@ public enum TokenUsageStatsProvider {
         return TokenUsageFileMetadata(modifiedAt: modifiedAt, size: values.fileSize ?? 0)
     }
 
-    private static func sessionRecord(from fileURL: URL) -> TokenUsageSessionRecord? {
+    private static func sessionRecords(from fileURL: URL) -> [TokenUsageSessionRecord] {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
-            return nil
+            return []
         }
         defer {
             try? handle.close()
         }
 
         let decoder = JSONDecoder()
-        guard var offset = try? handle.seekToEnd() else {
-            return nil
-        }
-        var suffix = Data()
+        var records: [TokenUsageSessionRecord] = []
+        var pendingLine = Data()
+        var previousTotalUsage: TokenUsageBreakdownDisplay?
+        var lineNumber = 0
 
-        while offset > 0 {
-            let readSize = min(64 * 1024, Int(offset))
-            offset -= UInt64(readSize)
-            do {
-                try handle.seek(toOffset: offset)
-            } catch {
+        while true {
+            guard let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
                 break
             }
-            guard var chunk = try? handle.read(upToCount: readSize), !chunk.isEmpty else {
-                break
-            }
-            chunk.append(suffix)
+            pendingLine.append(chunk)
 
-            var searchEnd = chunk.endIndex
-            while let newlineRange = chunk.range(
-                of: newlineData,
-                options: .backwards,
-                in: chunk.startIndex..<searchEnd
-            ) {
-                let line = chunk.subdata(in: newlineRange.upperBound..<searchEnd)
-                if let record = tokenUsageRecord(from: line, decoder: decoder) {
-                    return record
+            while let newlineRange = pendingLine.firstRange(of: newlineData) {
+                let line = pendingLine.subdata(in: pendingLine.startIndex..<newlineRange.lowerBound)
+                pendingLine.removeSubrange(pendingLine.startIndex..<newlineRange.upperBound)
+                lineNumber += 1
+                if let record = tokenUsageRecord(
+                    from: line,
+                    decoder: decoder,
+                    previousTotalUsage: &previousTotalUsage,
+                    sourceID: "\(fileURL.path):\(lineNumber)"
+                ) {
+                    records.append(record)
                 }
-                searchEnd = newlineRange.lowerBound
             }
-
-            suffix = chunk.subdata(in: chunk.startIndex..<searchEnd)
         }
 
-        if !suffix.isEmpty, let record = tokenUsageRecord(from: suffix, decoder: decoder) {
-            return record
+        if !pendingLine.isEmpty {
+            lineNumber += 1
+            if let record = tokenUsageRecord(
+                from: pendingLine,
+                decoder: decoder,
+                previousTotalUsage: &previousTotalUsage,
+                sourceID: "\(fileURL.path):\(lineNumber)"
+            ) {
+                records.append(record)
+            }
         }
 
-        return nil
+        return records
     }
 
-    private static func tokenUsageRecord(from line: Data, decoder: JSONDecoder) -> TokenUsageSessionRecord? {
+    private static func tokenUsageRecord(
+        from line: Data,
+        decoder: JSONDecoder,
+        previousTotalUsage: inout TokenUsageBreakdownDisplay?,
+        sourceID: String
+    ) -> TokenUsageSessionRecord? {
         guard !line.isEmpty else {
             return nil
         }
@@ -173,11 +192,36 @@ public enum TokenUsageStatsProvider {
             let event = try? decoder.decode(TokenCountEvent.self, from: line),
             event.type == "event_msg",
             event.payload.type == "token_count",
+            let info = event.payload.info,
             let updatedAt = parseTimestamp(event.timestamp)
         else {
             return nil
         }
-        return TokenUsageSessionRecord(updatedAt: updatedAt, usage: event.payload.info.totalTokenUsage)
+        let usage = info.lastTokenUsage ?? usageDelta(
+            currentTotal: info.totalTokenUsage,
+            previousTotal: previousTotalUsage
+        )
+        previousTotalUsage = info.totalTokenUsage
+        return TokenUsageSessionRecord(updatedAt: updatedAt, usage: usage, sourceID: sourceID)
+    }
+
+    private static func usageDelta(
+        currentTotal: TokenUsageBreakdownDisplay,
+        previousTotal: TokenUsageBreakdownDisplay?
+    ) -> TokenUsageBreakdownDisplay {
+        guard let previousTotal else {
+            return currentTotal
+        }
+        if currentTotal.totalTokens < previousTotal.totalTokens {
+            return currentTotal
+        }
+        return TokenUsageBreakdownDisplay(
+            totalTokens: max(0, currentTotal.totalTokens - previousTotal.totalTokens),
+            inputTokens: max(0, currentTotal.inputTokens - previousTotal.inputTokens),
+            cachedInputTokens: max(0, currentTotal.cachedInputTokens - previousTotal.cachedInputTokens),
+            outputTokens: max(0, currentTotal.outputTokens - previousTotal.outputTokens),
+            reasoningOutputTokens: max(0, currentTotal.reasoningOutputTokens - previousTotal.reasoningOutputTokens)
+        )
     }
 
     private static func parseTimestamp(_ raw: String) -> Date? {
@@ -199,7 +243,7 @@ private final class TokenUsageStatsCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: CachedTokenUsageFile] = [:]
 
-    func record(for path: String, modifiedAt: Date, size: Int) -> TokenUsageSessionRecord?? {
+    func record(for path: String, modifiedAt: Date, size: Int) -> [TokenUsageSessionRecord]? {
         lock.lock()
         defer { lock.unlock() }
 
@@ -210,12 +254,12 @@ private final class TokenUsageStatsCache: @unchecked Sendable {
         else {
             return nil
         }
-        return .some(entry.record)
+        return entry.records
     }
 
-    func store(_ record: TokenUsageSessionRecord?, for path: String, modifiedAt: Date, size: Int) {
+    func store(_ records: [TokenUsageSessionRecord], for path: String, modifiedAt: Date, size: Int) {
         lock.lock()
-        entries[path] = CachedTokenUsageFile(modifiedAt: modifiedAt, size: size, record: record)
+        entries[path] = CachedTokenUsageFile(modifiedAt: modifiedAt, size: size, records: records)
         lock.unlock()
     }
 
@@ -234,16 +278,18 @@ private struct TokenUsageFileMetadata {
 private struct CachedTokenUsageFile {
     var modifiedAt: Date
     var size: Int
-    var record: TokenUsageSessionRecord?
+    var records: [TokenUsageSessionRecord]
 }
 
 public struct TokenUsageSessionRecord: Equatable, Sendable {
     public var updatedAt: Date
     public var usage: TokenUsageBreakdownDisplay
+    public var sourceID: String?
 
-    public init(updatedAt: Date, usage: TokenUsageBreakdownDisplay) {
+    public init(updatedAt: Date, usage: TokenUsageBreakdownDisplay, sourceID: String? = nil) {
         self.updatedAt = updatedAt
         self.usage = usage
+        self.sourceID = sourceID
     }
 }
 
@@ -255,18 +301,20 @@ private struct TokenCountEvent: Decodable {
 
 private struct TokenCountPayload: Decodable {
     let type: String
-    let info: TokenCountInfo
+    let info: TokenCountInfo?
 }
 
 private struct TokenCountInfo: Decodable {
     let totalTokenUsage: TokenUsageBreakdownDisplay
+    let lastTokenUsage: TokenUsageBreakdownDisplay?
 
     private enum CodingKeys: String, CodingKey {
         case totalTokenUsage = "total_token_usage"
+        case lastTokenUsage = "last_token_usage"
     }
 }
 
-extension TokenUsageBreakdownDisplay: Decodable {
+extension TokenUsageBreakdownDisplay: Codable {
     private enum CodingKeys: String, CodingKey {
         case totalTokens = "total_tokens"
         case inputTokens = "input_tokens"
@@ -284,5 +332,14 @@ extension TokenUsageBreakdownDisplay: Decodable {
             outputTokens: try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0,
             reasoningOutputTokens: try container.decodeIfPresent(Int.self, forKey: .reasoningOutputTokens) ?? 0
         )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(totalTokens, forKey: .totalTokens)
+        try container.encode(inputTokens, forKey: .inputTokens)
+        try container.encode(cachedInputTokens, forKey: .cachedInputTokens)
+        try container.encode(outputTokens, forKey: .outputTokens)
+        try container.encode(reasoningOutputTokens, forKey: .reasoningOutputTokens)
     }
 }

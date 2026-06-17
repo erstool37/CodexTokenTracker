@@ -66,6 +66,24 @@ public struct GetAccountRateLimitsResponse: Decodable {
     public let rateLimitsByLimitId: [String: RateLimitSnapshotDTO]?
 }
 
+public struct GetAccountTokenUsageResponse: Decodable {
+    public let summary: AccountTokenUsageSummaryDTO
+    public let dailyUsageBuckets: [AccountTokenUsageDailyBucketDTO]?
+}
+
+public struct AccountTokenUsageSummaryDTO: Decodable {
+    public let lifetimeTokens: Int?
+    public let peakDailyTokens: Int?
+    public let longestRunningTurnSec: Int?
+    public let currentStreakDays: Int?
+    public let longestStreakDays: Int?
+}
+
+public struct AccountTokenUsageDailyBucketDTO: Decodable, Equatable, Sendable {
+    public let startDate: String
+    public let tokens: Int
+}
+
 public struct RateLimitSnapshotDTO: Decodable {
     public let limitId: String?
     public let limitName: String?

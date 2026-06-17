@@ -3,6 +3,8 @@ import Foundation
 public struct CodexStatusSnapshot: Equatable, Sendable {
     public var account: AccountDisplay
     public var limits: [LimitBucketDisplay]
+    public var onlineTokenStats: TokenUsageStats?
+    public var onlineTokenStatsError: String?
     public var tokenStats: TokenUsageStats?
     public var refreshedAt: Date
     public var source: String
@@ -10,12 +12,16 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
     public init(
         account: AccountDisplay,
         limits: [LimitBucketDisplay],
+        onlineTokenStats: TokenUsageStats? = nil,
+        onlineTokenStatsError: String? = nil,
         tokenStats: TokenUsageStats? = nil,
         refreshedAt: Date,
         source: String = "codex app-server"
     ) {
         self.account = account
         self.limits = limits
+        self.onlineTokenStats = onlineTokenStats
+        self.onlineTokenStatsError = onlineTokenStatsError
         self.tokenStats = tokenStats
         self.refreshedAt = refreshedAt
         self.source = source
@@ -145,28 +151,44 @@ public struct TokenUsageStats: Equatable, Sendable {
     public var weekly: TokenUsagePeriodStats
     public var monthly: TokenUsagePeriodStats
     public var source: String
+    public var showsBreakdown: Bool
+    public var note: String?
 
     public init(
         today: TokenUsagePeriodStats,
         weekly: TokenUsagePeriodStats,
         monthly: TokenUsagePeriodStats,
-        source: String
+        source: String,
+        showsBreakdown: Bool = true,
+        note: String? = nil
     ) {
         self.today = today
         self.weekly = weekly
         self.monthly = monthly
         self.source = source
+        self.showsBreakdown = showsBreakdown
+        self.note = note
+    }
+
+    public var periods: [TokenUsagePeriodStats] {
+        [today, weekly, monthly]
+    }
+
+    public var maxPeriodTotalTokens: Int {
+        periods.map(\.usage.totalTokens).max() ?? 0
     }
 }
 
 public struct TokenUsagePeriodStats: Equatable, Sendable {
     public var label: String
     public var sessionCount: Int
+    public var countLabel: String
     public var usage: TokenUsageBreakdownDisplay
 
-    public init(label: String, sessionCount: Int, usage: TokenUsageBreakdownDisplay) {
+    public init(label: String, sessionCount: Int, usage: TokenUsageBreakdownDisplay, countLabel: String? = nil) {
         self.label = label
         self.sessionCount = sessionCount
+        self.countLabel = countLabel ?? "\(sessionCount) events"
         self.usage = usage
     }
 }
