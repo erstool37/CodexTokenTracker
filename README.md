@@ -36,11 +36,11 @@ Open the app bundle or copy it to your preferred Applications folder.
 
 ## Privacy
 
-CodexTokenTracker asks Codex app-server for account and rate-limit status, then reads local `token_count` events from Codex session JSONL files to aggregate weekly and rolling 28-day token stats. It does not read or store Codex auth tokens, local SQLite databases, or prompt text. If app-server is unavailable, the app shows an explicit error instead of scraping local secrets.
+CodexTokenTracker asks Codex app-server for account, rate-limit, and exact `/usage` token stats. It reads local `token_count` events from Codex session JSONL files only as an estimated device fallback when exact usage is unavailable. It does not read or store Codex auth tokens, local SQLite databases, or prompt text. If app-server is unavailable, the app shows an explicit error instead of scraping local secrets.
 
 ## Design
 
 - Menu bar: minimal monochrome status icon with no numeric percentage text.
-- Popover: returned limit buckets, reset times, credits, weekly/28-day token stats, freshness, manual refresh, and Codex usage link.
+- Popover: returned limit buckets, reset times, credits, exact daily/weekly/cumulative usage stats, freshness, manual refresh, and Codex usage link.
 - Refresh: on launch, on popover open, and from the refresh button. Data older than 60 seconds is marked stale.
 - Startup: after it has been opened once, the app registers itself to start again at macOS login/restart. If Apple's login-item service is unavailable, it writes a user LaunchAgent fallback.

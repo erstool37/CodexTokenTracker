@@ -141,20 +141,23 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
             let now = Date()
             let onlineTokenStats: TokenUsageStats?
             let onlineTokenStatsError: String?
+            let fallbackTokenStats: TokenUsageStats?
             switch usageResult {
             case let .success(usage):
                 onlineTokenStats = AccountUsageStatsProvider.stats(from: usage, now: now)
                 onlineTokenStatsError = nil
+                fallbackTokenStats = nil
             case let .failure(error):
                 onlineTokenStats = nil
                 onlineTokenStatsError = error.localizedDescription
+                fallbackTokenStats = TokenUsageStatsProvider.load(for: accountDisplay, now: now)
             }
             return CodexStatusSnapshot(
                 account: accountDisplay,
                 limits: StatusMapper.limitDisplays(from: rateLimits, now: now),
                 onlineTokenStats: onlineTokenStats,
                 onlineTokenStatsError: onlineTokenStatsError,
-                tokenStats: TokenUsageStatsProvider.load(for: accountDisplay, now: now),
+                tokenStats: fallbackTokenStats,
                 refreshedAt: now
             )
         } catch {

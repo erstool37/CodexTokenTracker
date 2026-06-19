@@ -63,6 +63,29 @@ final class TokenStatsBox: @unchecked Sendable {
     }
 }
 
+final class TokenStatsLoaderProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCallCount = 0
+    private let stats: TokenUsageStats?
+
+    init(_ stats: TokenUsageStats?) {
+        self.stats = stats
+    }
+
+    func load(date: Date, account: AccountDisplay?) -> TokenUsageStats? {
+        lock.lock()
+        storedCallCount += 1
+        lock.unlock()
+        return stats
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCallCount
+    }
+}
+
 actor SequencedStatusProvider: StatusProviding {
     private var callCount = 0
     private let firstSnapshot: CodexStatusSnapshot
@@ -237,13 +260,15 @@ expect(accountUsage.summary.lifetimeTokens == 1000, "online account usage should
 expect(accountUsage.dailyUsageBuckets?.count == 4, "online account usage should decode daily buckets")
 let onlineStatsNow = ISO8601DateFormatter().date(from: "2026-06-14T12:00:00Z")!
 let onlineStats = AccountUsageStatsProvider.stats(from: accountUsage, now: onlineStatsNow)
-expect(onlineStats.source == "online account usage", "online stats should identify the API source")
-expect(onlineStats.showsBreakdown == false, "online stats should not claim local input/output breakdowns")
-expect(onlineStats.today.usage.totalTokens == 10, "online today stats should use today's daily bucket")
-expect(onlineStats.weekly.usage.totalTokens == 60, "online weekly stats should sum the last 7 daily buckets")
-expect(onlineStats.monthly.usage.totalTokens == 100, "online monthly stats should sum the last 28 daily buckets")
-expect(onlineStats.today.countLabel == "1 day", "online today stats should count days, not local events")
-expect(onlineStats.weekly.countLabel == "3 days", "online weekly stats should count nonzero daily buckets")
+expect(onlineStats.source == "exact /usage", "exact usage stats should identify the CLI usage source")
+expect(onlineStats.showsBreakdown == false, "exact usage stats should not claim local input/output breakdowns")
+expect(onlineStats.periods.map(\.label) == ["Daily", "Weekly", "Cumulative"], "exact usage should mirror /usage daily, weekly, and cumulative periods")
+expect(onlineStats.today.usage.totalTokens == 10, "exact daily stats should use today's server bucket")
+expect(onlineStats.weekly.usage.totalTokens == 60, "exact weekly stats should sum the last 7 daily buckets")
+expect(onlineStats.monthly.usage.totalTokens == 1000, "exact cumulative stats should use lifetime token usage")
+expect(onlineStats.today.countLabel == "1 day", "exact daily stats should count days, not local events")
+expect(onlineStats.weekly.countLabel == "3 days", "exact weekly stats should count nonzero daily buckets")
+expect(onlineStats.monthly.countLabel == "lifetime", "exact cumulative stats should label the lifetime account total")
 expect(onlineStats.note == "Latest daily bucket 2026-06-14", "online stats should expose the latest server bucket date")
 
 #if canImport(AppKit)
@@ -272,33 +297,30 @@ expect(
 
 let popoverSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusPopoverView.swift", encoding: .utf8)
 let statusBarControllerSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusBarController.swift", encoding: .utf8)
-let comparisonIndex = popoverSource.range(of: "TokenStatsComparisonView(")?.lowerBound
-let onlineTokenStatsIndex = popoverSource.range(of: "CompactTokenStatsView(title: \"Online\", stats: onlineTokenStats)")?.lowerBound
-let localTokenStatsIndex = popoverSource.range(of: "LocalTokenSummaryView(stats: localTokenStats)")?.lowerBound
+let usageCardIndex = popoverSource.range(of: "UsageStatsCardView(")?.lowerBound
+let exactUsageIndex = popoverSource.range(of: "UsageStatsCardView(title: \"Usage\", stats: onlineTokenStats)")?.lowerBound
+let fallbackUsageIndex = popoverSource.range(of: "UsageStatsCardView(title: \"Estimated device\", stats: localTokenStats)")?.lowerBound
 let limitsIndex = popoverSource.range(of: "if snapshot.limits.isEmpty")?.lowerBound
-expect(onlineTokenStatsIndex != nil, "popover should render compact online account token stats")
-expect(localTokenStatsIndex != nil, "popover should render compact local device token stats")
-expect(comparisonIndex != nil, "popover should render online and device token stats in one comparison row")
+expect(exactUsageIndex != nil, "popover should render exact /usage token stats as the primary usage card")
+expect(fallbackUsageIndex != nil, "popover should render local stats only as an estimated device fallback")
+expect(usageCardIndex != nil, "popover should define a single compact usage card")
 expect(limitsIndex != nil, "popover should render codex limits")
-expect(limitsIndex! < comparisonIndex!, "codex limits should render before token stats")
-expect(onlineTokenStatsIndex! < localTokenStatsIndex!, "online token stats should render before local device stats")
+expect(limitsIndex! < usageCardIndex!, "codex limits should render before usage stats")
 expect(popoverSource.contains(".frame(width: 340)"), "popover content should stay at the original compact width")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
 expect(!popoverSource.contains(".frame(width: 520)"), "popover content should not use the too-wide 520 point layout")
 expect(statusBarControllerSource.contains("popoverSize = NSSize(width: 340, height: 320)"), "popover controller should use the original compact width")
 expect(!popoverSource.contains("ScrollView(.vertical"), "popover should avoid vertical scrolling for the compact layout")
-if let comparisonRange = popoverSource.range(of: "private struct TokenStatsComparisonView"),
-   let compactStatsRange = popoverSource.range(of: "private struct CompactTokenStatsView"),
+expect(!popoverSource.contains("TokenStatsComparisonView"), "exact usage should replace the old online/device comparison row")
+expect(!popoverSource.contains("LocalTokenSummaryView"), "device stats should not render beside exact usage")
+if let usageCardRange = popoverSource.range(of: "private struct UsageStatsCardView"),
    let compactRowRange = popoverSource.range(of: "private struct CompactTokenRow") {
-    let comparisonSource = popoverSource[comparisonRange.lowerBound..<compactStatsRange.lowerBound]
-    let tokenStatsSource = popoverSource[comparisonRange.lowerBound..<compactRowRange.lowerBound]
-    expect(comparisonSource.contains("HStack(alignment: .top, spacing: 4)"), "online and device token stats should render side by side with tight spacing")
-    expect(tokenStatsSource.contains("compactPeriodLabel"), "compact token rows should shorten period labels")
-    expect(tokenStatsSource.contains("ForEach(stats.periods"), "compact token stats should include today, weekly, and monthly rows")
-    expect(tokenStatsSource.contains("CompactTokenStatsView(title: \"Device\", stats: stats)"), "device stats should use the same today, weekly, and monthly compact rows")
-    expect(!tokenStatsSource.contains("ProgressView("), "token stats should render numbers only, without bars")
+    let tokenStatsSource = popoverSource[usageCardRange.lowerBound..<compactRowRange.lowerBound]
+    expect(tokenStatsSource.contains("ForEach(stats.periods"), "usage card should render every usage period returned by the stats model")
+    expect(tokenStatsSource.contains("stats.note"), "usage card should surface exact usage freshness/source notes")
+    expect(!tokenStatsSource.contains("ProgressView("), "usage stats should render numbers only, without bars")
 } else {
-    expect(false, "popover should define compact side-by-side token stats views")
+    expect(false, "popover should define compact exact usage card views")
 }
 expect(!popoverSource.contains("TokenStatsMetricView"), "compact token stats should not render detailed breakdown metrics")
 expect(!popoverSource.contains("Input\""), "compact token stats should hide input breakdown")
@@ -483,25 +505,7 @@ let firstAccountAfterSwitchStats = TokenUsageStatsProvider.load(
 )
 expect(firstAccountAfterSwitchStats.today.usage.totalTokens == 50, "first account stats should remain separate after switching accounts")
 
-let oldManualRefreshStats = TokenUsageStats(
-    today: TokenUsagePeriodStats(
-        label: "Today",
-        sessionCount: 1,
-        usage: TokenUsageBreakdownDisplay(totalTokens: 10)
-    ),
-    weekly: TokenUsagePeriodStats(
-        label: "7 days",
-        sessionCount: 1,
-        usage: TokenUsageBreakdownDisplay(totalTokens: 10)
-    ),
-    monthly: TokenUsagePeriodStats(
-        label: "28 days",
-        sessionCount: 1,
-        usage: TokenUsageBreakdownDisplay(totalTokens: 10)
-    ),
-    source: "~/.codex/sessions"
-)
-let newManualRefreshStats = TokenUsageStats(
+let fallbackStats = TokenUsageStats(
     today: TokenUsagePeriodStats(
         label: "Today",
         sessionCount: 2,
@@ -519,52 +523,59 @@ let newManualRefreshStats = TokenUsageStats(
     ),
     source: "~/.codex/sessions"
 )
-let manualRefreshStatsBox = TokenStatsBox(oldManualRefreshStats)
-let oldManualRefreshSnapshot = CodexStatusSnapshot(
+let exactUsageFirstSnapshot = CodexStatusSnapshot(
     account: AccountDisplay(kind: "ChatGPT", email: nil, plan: nil, requiresOpenAIAuth: false),
     limits: [],
-    tokenStats: oldManualRefreshStats,
+    onlineTokenStats: onlineStats,
+    onlineTokenStatsError: nil,
+    tokenStats: nil,
     refreshedAt: statsNow
 )
-let newManualRefreshSnapshot = CodexStatusSnapshot(
+let exactUsageSecondSnapshot = CodexStatusSnapshot(
     account: AccountDisplay(kind: "ChatGPT", email: nil, plan: nil, requiresOpenAIAuth: false),
     limits: [],
-    tokenStats: newManualRefreshStats,
+    onlineTokenStats: onlineStats,
+    onlineTokenStatsError: nil,
+    tokenStats: nil,
     refreshedAt: statsNow.addingTimeInterval(1)
 )
-let manualRefreshStore = StatusStore(
+let exactUsageFallbackProbe = TokenStatsLoaderProbe(fallbackStats)
+let exactUsageRefreshStore = StatusStore(
     provider: SequencedStatusProvider(
-        firstSnapshot: oldManualRefreshSnapshot,
-        secondSnapshot: newManualRefreshSnapshot
+        firstSnapshot: exactUsageFirstSnapshot,
+        secondSnapshot: exactUsageSecondSnapshot
     ),
-    tokenStatsLoader: { _, _ in manualRefreshStatsBox.value },
+    tokenStatsLoader: exactUsageFallbackProbe.load(date:account:),
     now: { statsNow }
 )
 await MainActor.run {
-    manualRefreshStore.refresh()
+    exactUsageRefreshStore.refresh()
 }
-await waitForRefreshToFinish(manualRefreshStore)
-let firstManualRefreshTokenStats = await MainActor.run(body: { manualRefreshStore.currentSnapshot?.tokenStats })
+await waitForRefreshToFinish(exactUsageRefreshStore)
+let firstExactUsageTokenStats = await MainActor.run(body: { exactUsageRefreshStore.currentSnapshot?.onlineTokenStats })
 expect(
-    firstManualRefreshTokenStats == oldManualRefreshStats,
-    "first refresh should load old token stats"
+    firstExactUsageTokenStats == onlineStats,
+    "first refresh should load exact usage stats"
 )
-manualRefreshStatsBox.value = newManualRefreshStats
 await MainActor.run {
-    manualRefreshStore.refresh()
+    exactUsageRefreshStore.refresh()
 }
 try? await Task.sleep(for: .milliseconds(50))
-let manualRefreshStillInFlight = await MainActor.run(body: { manualRefreshStore.isRefreshing })
+let exactUsageRefreshStillInFlight = await MainActor.run(body: { exactUsageRefreshStore.isRefreshing })
 expect(
-    manualRefreshStillInFlight,
+    exactUsageRefreshStillInFlight,
     "second provider refresh should still be in flight"
 )
-let immediateManualRefreshTokenStats = await MainActor.run(body: { manualRefreshStore.currentSnapshot?.tokenStats })
+let immediateExactUsageSnapshot = await MainActor.run(body: { exactUsageRefreshStore.currentSnapshot })
 expect(
-    immediateManualRefreshTokenStats == newManualRefreshStats,
-    "manual refresh should update local token stats before the status provider finishes"
+    exactUsageFallbackProbe.callCount == 0,
+    "manual refresh with exact usage should not load local fallback stats before the status provider finishes"
 )
-await waitForRefreshToFinish(manualRefreshStore)
+expect(
+    immediateExactUsageSnapshot?.tokenStats == nil,
+    "exact usage snapshot should not be overwritten with estimated device fallback stats"
+)
+await waitForRefreshToFinish(exactUsageRefreshStore)
 
 let freshFailureStats = TokenUsageStats(
     today: TokenUsagePeriodStats(

@@ -92,7 +92,7 @@ private struct SnapshotView: View {
                 }
             }
             if snapshot.onlineTokenStats != nil || snapshot.onlineTokenStatsError != nil || snapshot.tokenStats != nil {
-                TokenStatsComparisonView(
+                UsageStatsView(
                     onlineTokenStats: snapshot.onlineTokenStats,
                     onlineUnavailable: snapshot.onlineTokenStatsError != nil,
                     localTokenStats: snapshot.tokenStats
@@ -251,39 +251,37 @@ private extension LimitWarningLevel {
     }
 }
 
-private struct TokenStatsComparisonView: View {
+private struct UsageStatsView: View {
     let onlineTokenStats: TokenUsageStats?
     let onlineUnavailable: Bool
     let localTokenStats: TokenUsageStats?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             if let onlineTokenStats {
-                CompactTokenStatsView(title: "Online", stats: onlineTokenStats)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            } else if onlineUnavailable {
-                CompactTokenStatsUnavailableView()
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-
-            if let localTokenStats {
-                LocalTokenSummaryView(stats: localTokenStats)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                UsageStatsCardView(title: "Usage", stats: onlineTokenStats)
+            } else {
+                if onlineUnavailable {
+                    ExactUsageUnavailableView()
+                }
+                if let localTokenStats {
+                    UsageStatsCardView(title: "Estimated device", stats: localTokenStats)
+                }
             }
         }
     }
 }
 
-private struct CompactTokenStatsUnavailableView: View {
+private struct ExactUsageUnavailableView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Online")
+            Text("Usage")
                 .font(.subheadline.weight(.semibold))
             HStack(alignment: .firstTextBaseline) {
                 Text("Status")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("Unavailable")
+                Text("Exact usage unavailable")
                     .fontWeight(.semibold)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -295,7 +293,7 @@ private struct CompactTokenStatsUnavailableView: View {
     }
 }
 
-private struct CompactTokenStatsView: View {
+private struct UsageStatsCardView: View {
     let title: String
     let stats: TokenUsageStats
 
@@ -304,32 +302,16 @@ private struct CompactTokenStatsView: View {
             Text(title)
                 .font(.subheadline.weight(.semibold))
             ForEach(stats.periods, id: \.label) { period in
-                CompactTokenRow(label: compactPeriodLabel(period.label), tokens: period.usage.totalTokens)
+                CompactTokenRow(label: period.label, tokens: period.usage.totalTokens)
+            }
+            if let note = stats.note {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(5)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func compactPeriodLabel(_ label: String) -> String {
-        switch label {
-        case "Today":
-            return "T"
-        case "7 days":
-            return "7d"
-        case "28 days":
-            return "28d"
-        default:
-            return label
-        }
-    }
-}
-
-private struct LocalTokenSummaryView: View {
-    let stats: TokenUsageStats
-
-    var body: some View {
-        CompactTokenStatsView(title: "Device", stats: stats)
     }
 }
 

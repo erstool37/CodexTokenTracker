@@ -44,7 +44,6 @@ public final class StatusStore: ObservableObject {
         staleTicker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
-                self?.refreshLocalTokenStats()
                 self?.objectWillChange.send()
             }
         }
@@ -105,7 +104,6 @@ public final class StatusStore: ObservableObject {
         }
 
         let previous = currentSnapshot
-        refreshLocalTokenStats(account: previous?.account)
         if isRefreshing {
             return
         }
@@ -128,7 +126,9 @@ public final class StatusStore: ObservableObject {
             } catch {
                 guard !Task.isCancelled else { return }
                 let failureDate = now()
-                let localTokenStats = tokenStatsLoader(failureDate, previous?.account)
+                let localTokenStats = previous?.onlineTokenStats == nil
+                    ? tokenStatsLoader(failureDate, previous?.account)
+                    : nil
                 state = .failed(
                     previous: Self.failureSnapshot(
                         previous: previous,
@@ -165,32 +165,6 @@ public final class StatusStore: ObservableObject {
         retryTask?.cancel()
         retryTask = nil
         retryAttempt = 0
-    }
-
-    private func refreshLocalTokenStats(at refreshDate: Date? = nil, account: AccountDisplay? = nil) {
-        let refreshDate = refreshDate ?? now()
-        let account = account ?? currentSnapshot?.account
-        guard let localTokenStats = tokenStatsLoader(refreshDate, account) else {
-            return
-        }
-
-        switch state {
-        case var .loaded(snapshot):
-            snapshot.tokenStats = localTokenStats
-            state = .loaded(snapshot)
-        case let .failed(previous, message):
-            state = .failed(
-                previous: Self.snapshotWithUpdatedTokenStats(
-                    previous: previous,
-                    tokenStats: localTokenStats,
-                    refreshedAt: refreshDate,
-                    allowCreatingLocalOnly: false
-                ),
-                message: message
-            )
-        case .idle, .refreshing:
-            break
-        }
     }
 
     private static func failureSnapshot(

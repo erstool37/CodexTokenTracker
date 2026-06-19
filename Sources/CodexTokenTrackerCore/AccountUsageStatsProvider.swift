@@ -10,25 +10,31 @@ public enum AccountUsageStatsProvider {
         let buckets = (response.dailyUsageBuckets ?? []).compactMap(AccountUsageBucket.init)
         let todayStart = calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -6, to: todayStart) ?? todayStart
-        let monthStart = calendar.date(byAdding: .day, value: -27, to: todayStart) ?? todayStart
         let latestDateText = buckets.map(\.startDateText).max()
+        let daily = periodStats(
+            label: "Daily",
+            buckets: buckets.filter { calendar.isDate($0.date, inSameDayAs: todayStart) }
+        )
+        let weekly = periodStats(
+            label: "Weekly",
+            buckets: buckets.filter { $0.date >= weekStart && $0.date <= todayStart }
+        )
+        let cumulative = cumulativeStats(from: response.summary)
+        let periods = cumulative.map { [daily, weekly, $0] } ?? [daily, weekly]
 
         return TokenUsageStats(
-            today: periodStats(
-                label: "Today",
-                buckets: buckets.filter { calendar.isDate($0.date, inSameDayAs: todayStart) }
+            today: daily,
+            weekly: weekly,
+            monthly: cumulative ?? TokenUsagePeriodStats(
+                label: "Cumulative",
+                sessionCount: 0,
+                usage: .zero,
+                countLabel: "unavailable"
             ),
-            weekly: periodStats(
-                label: "7 days",
-                buckets: buckets.filter { $0.date >= weekStart && $0.date <= todayStart }
-            ),
-            monthly: periodStats(
-                label: "28 days",
-                buckets: buckets.filter { $0.date >= monthStart && $0.date <= todayStart }
-            ),
-            source: "online account usage",
+            source: "exact /usage",
             showsBreakdown: false,
-            note: latestDateText.map { "Latest daily bucket \($0)" }
+            note: latestDateText.map { "Latest daily bucket \($0)" },
+            periods: periods
         )
     }
 
@@ -39,6 +45,18 @@ public enum AccountUsageStatsProvider {
             sessionCount: dayCount,
             usage: TokenUsageBreakdownDisplay(totalTokens: buckets.reduce(0) { $0 + $1.tokens }),
             countLabel: "\(dayCount) \(dayCount == 1 ? "day" : "days")"
+        )
+    }
+
+    private static func cumulativeStats(from summary: AccountTokenUsageSummaryDTO) -> TokenUsagePeriodStats? {
+        guard let lifetimeTokens = summary.lifetimeTokens else {
+            return nil
+        }
+        return TokenUsagePeriodStats(
+            label: "Cumulative",
+            sessionCount: 0,
+            usage: TokenUsageBreakdownDisplay(totalTokens: lifetimeTokens),
+            countLabel: "lifetime"
         )
     }
 

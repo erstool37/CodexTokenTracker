@@ -153,6 +153,7 @@ public struct TokenUsageStats: Equatable, Sendable {
     public var source: String
     public var showsBreakdown: Bool
     public var note: String?
+    public var periods: [TokenUsagePeriodStats]
 
     public init(
         today: TokenUsagePeriodStats,
@@ -160,7 +161,8 @@ public struct TokenUsageStats: Equatable, Sendable {
         monthly: TokenUsagePeriodStats,
         source: String,
         showsBreakdown: Bool = true,
-        note: String? = nil
+        note: String? = nil,
+        periods: [TokenUsagePeriodStats]? = nil
     ) {
         self.today = today
         self.weekly = weekly
@@ -168,10 +170,7 @@ public struct TokenUsageStats: Equatable, Sendable {
         self.source = source
         self.showsBreakdown = showsBreakdown
         self.note = note
-    }
-
-    public var periods: [TokenUsagePeriodStats] {
-        [today, weekly, monthly]
+        self.periods = periods ?? [today, weekly, monthly]
     }
 
     public var maxPeriodTotalTokens: Int {
