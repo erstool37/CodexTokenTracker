@@ -258,13 +258,13 @@ let accountUsageJSON = """
 let accountUsage = try JSONDecoder().decode(GetAccountTokenUsageResponse.self, from: accountUsageJSON)
 expect(accountUsage.summary.lifetimeTokens == 1000, "online account usage should decode summary totals")
 expect(accountUsage.dailyUsageBuckets?.count == 4, "online account usage should decode daily buckets")
-let onlineStatsNow = ISO8601DateFormatter().date(from: "2026-06-14T12:00:00Z")!
+let onlineStatsNow = ISO8601DateFormatter().date(from: "2026-06-19T12:00:00Z")!
 let onlineStats = AccountUsageStatsProvider.stats(from: accountUsage, now: onlineStatsNow)
 expect(onlineStats.source == "exact /usage", "exact usage stats should identify the CLI usage source")
 expect(onlineStats.showsBreakdown == false, "exact usage stats should not claim local input/output breakdowns")
 expect(onlineStats.periods.map(\.label) == ["Daily", "Weekly", "Cumulative"], "exact usage should mirror /usage daily, weekly, and cumulative periods")
-expect(onlineStats.today.usage.totalTokens == 10, "exact daily stats should use today's server bucket")
-expect(onlineStats.weekly.usage.totalTokens == 60, "exact weekly stats should sum the last 7 daily buckets")
+expect(onlineStats.today.usage.totalTokens == 10, "exact daily stats should use the latest server bucket")
+expect(onlineStats.weekly.usage.totalTokens == 60, "exact weekly stats should sum the 7-day window ending at the latest server bucket")
 expect(onlineStats.monthly.usage.totalTokens == 1000, "exact cumulative stats should use lifetime token usage")
 expect(onlineStats.today.countLabel == "1 day", "exact daily stats should count days, not local events")
 expect(onlineStats.weekly.countLabel == "3 days", "exact weekly stats should count nonzero daily buckets")

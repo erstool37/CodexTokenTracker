@@ -36,7 +36,7 @@ Open the app bundle or copy it to your preferred Applications folder.
 
 ## Privacy
 
-CodexTokenTracker asks Codex app-server for account, rate-limit, and exact `/usage` token stats. It reads local `token_count` events from Codex session JSONL files only as an estimated device fallback when exact usage is unavailable. It does not read or store Codex auth tokens, local SQLite databases, or prompt text. If app-server is unavailable, the app shows an explicit error instead of scraping local secrets.
+CodexTokenTracker asks Codex app-server for account, rate-limit, and exact `/usage` token stats. Daily and weekly token rows are anchored to the newest daily usage bucket returned by Codex, not the local wall-clock day, so they stay aligned with `/usage` when the server has not published a bucket for the current date yet. It reads local `token_count` events from Codex session JSONL files only as an estimated device fallback when exact usage is unavailable. It does not read or store Codex auth tokens, local SQLite databases, or prompt text. If app-server is unavailable, the app shows an explicit error instead of scraping local secrets.
 
 ## Design
 
