@@ -5,18 +5,20 @@ import SwiftUI
 
 @MainActor
 final class StatusBarController: NSObject, NSPopoverDelegate {
-    private static let popoverSize = NSSize(width: 340, height: 320)
+    private static let popoverSize = NSSize(width: 420, height: 400)
     private static let screenMargin: CGFloat = 12
 
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let store: StatusStore
+    private let claudeStore: StatusStore
     private let appearanceRefreshPolicy = StatusBarAppearanceRefreshPolicy.menuBar
     private var cancellables: Set<AnyCancellable> = []
     private var currentSymbolName = "gauge.with.needle"
 
-    init(store: StatusStore) {
+    init(store: StatusStore, claudeStore: StatusStore) {
         self.store = store
+        self.claudeStore = claudeStore
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.popover = NSPopover()
         super.init()
@@ -42,7 +44,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         setStatusImage(symbolName: currentSymbolName)
         button.imagePosition = .imageOnly
         button.title = ""
-        button.toolTip = "CodexTokenTracker"
+        button.toolTip = "Token Tracker"
     }
 
     private func configurePopover() {
@@ -50,7 +52,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         popover.contentSize = Self.popoverSize
         popover.delegate = self
         popover.contentViewController = NSHostingController(
-            rootView: StatusPopoverView(store: store)
+            rootView: StatusPopoverView(store: store, claudeStore: claudeStore)
         )
     }
 
@@ -95,7 +97,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         if store.isRefreshing && store.currentSnapshot == nil {
             button.title = ""
             applyStatusItemTint()
-            button.toolTip = "CodexTokenTracker - refreshing"
+            button.toolTip = "Token Tracker - refreshing"
             return
         }
 
@@ -105,13 +107,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         let warningLevel = store.currentSnapshot?.mostSevereLimitWarningLevel ?? .normal
 
         if store.hasError {
-            button.toolTip = "CodexTokenTracker - refresh failed: \(store.errorMessage ?? "unknown error")"
+            button.toolTip = "Token Tracker - refresh failed: \(store.errorMessage ?? "unknown error")"
         } else if warningLevel != .normal {
-            button.toolTip = "CodexTokenTracker - \(warningLevel.statusItemTooltip)"
+            button.toolTip = "Token Tracker - \(warningLevel.statusItemTooltip)"
         } else if store.stale {
-            button.toolTip = "CodexTokenTracker - stale data"
+            button.toolTip = "Token Tracker - stale data"
         } else {
-            button.toolTip = "CodexTokenTracker"
+            button.toolTip = "Token Tracker"
         }
     }
 
@@ -120,7 +122,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             return
         }
 
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "CodexTokenTracker")
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Token Tracker")
         image?.isTemplate = true
         button.image = image
         applyStatusItemTint()
@@ -164,6 +166,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
         if !popover.isShown {
             store.refresh()
+            claudeStore.refresh()
             popover.contentSize = constrainedContentSize(for: button)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             framePopoverInsideScreen(relativeTo: button)

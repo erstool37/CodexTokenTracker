@@ -7,9 +7,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.erstool37.CodexTokenTracker</string>
     <key>CFBundleName</key>
-    <string>CodexTokenTracker</string>
+    <string>Token Tracker</string>
     <key>CFBundleDisplayName</key>
-    <string>CodexTokenTracker</string>
+    <string>Token Tracker</string>
     <key>CFBundleIconFile</key>
     <string>CodexTokenTracker</string>
     <key>CFBundlePackageType</key>

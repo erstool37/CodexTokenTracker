@@ -269,7 +269,7 @@ expect(onlineStats.monthly.usage.totalTokens == 1000, "exact cumulative stats sh
 expect(onlineStats.today.countLabel == "1 day", "exact daily stats should count days, not local events")
 expect(onlineStats.weekly.countLabel == "3 days", "exact weekly stats should count nonzero daily buckets")
 expect(onlineStats.monthly.countLabel == "lifetime", "exact cumulative stats should label the lifetime account total")
-expect(onlineStats.note == "Latest daily bucket 2026-06-14", "online stats should expose the latest server bucket date")
+expect(onlineStats.note == nil, "online stats should not surface a latest-bucket note")
 
 #if canImport(AppKit)
 let appearancePolicy = StatusBarAppearanceRefreshPolicy.menuBar
@@ -306,11 +306,12 @@ expect(fallbackUsageIndex != nil, "popover should render local stats only as an 
 expect(usageCardIndex != nil, "popover should define a single compact usage card")
 expect(limitsIndex != nil, "popover should render codex limits")
 expect(limitsIndex! < usageCardIndex!, "codex limits should render before usage stats")
-expect(popoverSource.contains(".frame(width: 340)"), "popover content should stay at the original compact width")
+expect(popoverSource.contains(".frame(width: 420, height: 400)"), "popover content should use the widened 420x400 size")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
 expect(!popoverSource.contains(".frame(width: 520)"), "popover content should not use the too-wide 520 point layout")
-expect(statusBarControllerSource.contains("popoverSize = NSSize(width: 340, height: 320)"), "popover controller should use the original compact width")
-expect(!popoverSource.contains("ScrollView(.vertical"), "popover should avoid vertical scrolling for the compact layout")
+expect(statusBarControllerSource.contains("popoverSize = NSSize(width: 420, height: 400)"), "popover controller should use the widened 420pt width")
+expect(popoverSource.contains("ProviderPaneView("), "popover should render Codex and Claude as two side-by-side provider panes")
+expect(popoverSource.contains("title: \"Codex\"") && popoverSource.contains("title: \"Claude\""), "popover should label a Codex pane and a Claude pane")
 expect(!popoverSource.contains("TokenStatsComparisonView"), "exact usage should replace the old online/device comparison row")
 expect(!popoverSource.contains("LocalTokenSummaryView"), "device stats should not render beside exact usage")
 if let usageCardRange = popoverSource.range(of: "private struct UsageStatsCardView"),

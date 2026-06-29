@@ -11,7 +11,6 @@ public enum AccountUsageStatsProvider {
         let latestDate = buckets.map(\.date).max()
         let anchorDay = latestDate.map { calendar.startOfDay(for: $0) } ?? calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -6, to: anchorDay) ?? anchorDay
-        let latestDateText = buckets.map(\.startDateText).max()
         let daily = periodStats(
             label: "Daily",
             buckets: buckets.filter { calendar.isDate($0.date, inSameDayAs: anchorDay) }
@@ -34,7 +33,7 @@ public enum AccountUsageStatsProvider {
             ),
             source: "exact /usage",
             showsBreakdown: false,
-            note: latestDateText.map { "Latest daily bucket \($0)" },
+            note: nil,
             periods: periods
         )
     }

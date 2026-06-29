@@ -43,7 +43,16 @@ printf "APPL????" > "$CONTENTS_DIR/PkgInfo"
 swift -module-cache-path "$SWIFT_MODULE_CACHE_DIR" "Scripts/make_icon.swift" "$RESOURCES_DIR/$APP_NAME.icns"
 
 chmod +x "$MACOS_DIR/$APP_NAME"
-codesign --force --deep --sign - "$APP_DIR"
+# Prefer a stable self-signed identity so the app's signature (and its keychain ACL /
+# "Always Allow") survives rebuilds. Falls back to ad-hoc if the identity isn't installed
+# (run Scripts/setup_signing.sh once to create it).
+SIGN_IDENTITY="${CODEX_TOKEN_TRACKER_SIGN_IDENTITY:-CodexTokenTracker Self Signed}"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
+else
+  echo "warning: signing identity '$SIGN_IDENTITY' not found; using ad-hoc signature" >&2
+  codesign --force --deep --sign - "$APP_DIR"
+fi
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 rm -rf "$ROOT_APP_DIR"
