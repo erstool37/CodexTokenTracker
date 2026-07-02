@@ -123,16 +123,8 @@ public enum StatusMapper {
         if raw.contains("-") && raw.rangeOfCharacter(from: .uppercaseLetters) != nil {
             return raw
         }
-        return raw
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-            .split(separator: " ")
-            .map { word in
-                if word.uppercased().hasPrefix("GPT") {
-                    return word.uppercased()
-                }
-                return word.prefix(1).uppercased() + word.dropFirst()
-            }
-            .joined(separator: " ")
+        // Route unknown bucket ids through the shared adaptive labeler so a new Codex limit id
+        // renders legibly with no code change — the same mechanism the Claude pane uses.
+        return AdaptiveLabel.humanize(raw)
     }
 }

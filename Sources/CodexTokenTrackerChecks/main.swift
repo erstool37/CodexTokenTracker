@@ -203,6 +203,51 @@ expect(LimitWarningLevel(percentLeft: 5) == .critical, "limits at 5% remaining s
 expect(LimitWarningLevel(percentLeft: 0) == .critical, "depleted limits should be critical")
 expect(buckets[0].windows[0].warningLevel == .normal, "5h window should expose its warning level")
 expect(buckets[0].windows[1].warningLevel == .normal, "weekly window should expose its warning level")
+
+// Adaptive Claude usage: the self-describing `limits[]` array drives the windows so newly
+// introduced limits (e.g. a per-model weekly "Fable" window) render with no code change.
+let claudeNow = Date(timeIntervalSince1970: 1_770_000_000)
+let claudeAdaptiveJSON = """
+{
+  "five_hour": { "utilization": 99.0 },
+  "seven_day": { "utilization": 99.0 },
+  "seven_day_opus": null,
+  "seven_day_sonnet": null,
+  "limits": [
+    { "kind": "session", "group": "session", "percent": 11, "resets_at": "2026-07-02T04:40:00.974674+00:00", "is_active": true },
+    { "kind": "weekly_all", "group": "weekly", "percent": 2, "resets_at": "2026-07-02T19:00:00.974697+00:00", "is_active": false },
+    { "kind": "weekly_scoped", "group": "weekly", "percent": 40, "resets_at": "2026-07-02T19:00:00.974979+00:00", "scope": { "model": { "id": null, "display_name": "Fable" } }, "is_active": false }
+  ],
+  "extra_usage": { "is_enabled": false },
+  "spend": { "enabled": false, "used": { "amount_minor": 0, "currency": "USD", "exponent": 2 } }
+}
+""".data(using: .utf8)!
+let claudeSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
+expect(claudeSnapshot.limits.count == 1, "Claude maps to a single bucket")
+let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
+expect(claudeLabels == ["5h limit", "Weekly limit", "Weekly · Fable"], "limits[] drives windows adaptively, including Fable — got \(claudeLabels)")
+expect(claudeSnapshot.limits[0].windows[0].percentLeft == 89, "session percent left should map from `percent`")
+expect(claudeSnapshot.limits[0].windows[2].percentLeft == 60, "Fable percent left should map from `percent`")
+expect(claudeSnapshot.limits[0].windows[2].resetsAtText != nil, "Fable window should carry a reset time")
+expect(claudeSnapshot.limits[0].creditsText == nil, "disabled spend/extra_usage should show no credits line")
+
+// When `limits[]` is absent, the legacy top-level fields still render (backward compatibility).
+let claudeLegacyJSON = """
+{
+  "five_hour": { "utilization": 25.0, "resets_at": "2026-07-02T04:40:00Z" },
+  "seven_day": { "used_percentage": 60.0 },
+  "used_credits": 3,
+  "monthly_credit_limit": 10
+}
+""".data(using: .utf8)!
+let claudeLegacy = try ClaudeUsageMapper.snapshot(fromJSON: claudeLegacyJSON, now: claudeNow)
+expect(claudeLegacy.limits.first?.windows.map(\.label) == ["5h limit", "Weekly limit"], "legacy fields render when limits[] is missing")
+expect(claudeLegacy.limits.first?.windows.first?.percentLeft == 75, "legacy 5h percent left should map")
+expect(claudeLegacy.limits.first?.creditsText == "3/10 credits", "legacy credits should render")
+
+// The shared adaptive labeler humanizes never-before-seen identifiers legibly.
+expect(AdaptiveLabel.humanize("seven_day_haiku") == "Seven Day Haiku", "unknown snake_case humanizes")
+expect(AdaptiveLabel.humanize("codex") == "Codex", "single token capitalizes")
 let warningSnapshot = CodexStatusSnapshot(
     account: AccountDisplay(kind: "ChatGPT", email: nil, plan: nil, requiresOpenAIAuth: false),
     limits: [
