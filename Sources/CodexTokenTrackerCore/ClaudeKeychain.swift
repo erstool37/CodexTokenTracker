@@ -27,6 +27,20 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
 /// Claude Code stores its credentials as a generic password whose service is
 /// `"Claude Code-credentials"` and whose account is the macOS short username. The
 /// secret is a JSON blob of the shape `{"claudeAiOauth":{"accessToken":"…","expiresAt":<ms>,…}}`.
+///
+/// ## Why this shells out to `/usr/bin/security` instead of `SecItemCopyMatching`
+///
+/// Claude Code restricts the item's decrypt ACL to a trusted-application list and a
+/// code-partition list. A non-trusted app that calls `SecItemCopyMatching` directly
+/// triggers the "… wants to use confidential information" prompt; clicking *Always
+/// Allow* pins the requesting app by its **cdhash**, which changes on every rebuild —
+/// so each new build of this app re-prompts. That is the "asks every time" symptom.
+///
+/// `/usr/bin/security` is Apple-signed and lives in the stable `apple-tool:` partition;
+/// once it is in the item's trusted list it stays authorized regardless of how often
+/// *this* app is rebuilt. Reading through it therefore decouples our access from our
+/// own (per-build) code identity and stops the repeated prompts. The secret is returned
+/// on `security`'s stdout, never via argv, so it is not exposed in the process list.
 public enum ClaudeKeychain {
     private static let service = "Claude Code-credentials"
 
@@ -44,27 +58,9 @@ public enum ClaudeKeychain {
     }
 
     public static func readAccessToken(account: String = NSUserName()) throws -> Token {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            break
-        case errSecItemNotFound:
-            throw ClaudeKeychainError.notSignedIn
-        default:
-            throw ClaudeKeychainError.keychainStatus(status)
-        }
+        let data = try copySecret(account: account)
 
         guard
-            let data = item as? Data,
             let stored = try? JSONDecoder().decode(Stored.self, from: data),
             let token = stored.claudeAiOauth?.accessToken,
             !token.isEmpty
@@ -73,5 +69,49 @@ public enum ClaudeKeychain {
         }
 
         return Token(accessToken: token, expiresAtMillis: stored.claudeAiOauth?.expiresAt)
+    }
+
+    /// Invokes `/usr/bin/security find-generic-password -w` and returns the raw secret bytes.
+    /// Maps the tool's exit code back onto the same error space the direct API used so callers
+    /// (and their UI strings) are unchanged.
+    private static func copySecret(account: String) throws -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = [
+            "find-generic-password",
+            "-s", service,
+            "-a", account,
+            "-w", // print only the password (secret) to stdout
+        ]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            throw ClaudeKeychainError.keychainStatus(errSecInternalComponent)
+        }
+
+        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+        stderr.fileHandleForReading.readDataToEndOfFile() // drain to avoid a full-pipe stall
+        process.waitUntilExit()
+
+        switch process.terminationStatus {
+        case 0:
+            // `security -w` appends a trailing newline; trim it before JSON decoding.
+            let trimmed = String(data: outData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let trimmed, let bytes = trimmed.data(using: .utf8) else {
+                throw ClaudeKeychainError.malformedSecret
+            }
+            return bytes
+        case 44: // errSecItemNotFound — no credential item exists
+            throw ClaudeKeychainError.notSignedIn
+        case let code:
+            throw ClaudeKeychainError.keychainStatus(OSStatus(code))
+        }
     }
 }

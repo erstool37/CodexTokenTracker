@@ -42,7 +42,7 @@ public enum ClaudeTokenUsageProvider {
             weekly: periodStats(label: "7 days", records: weeklyRecords),
             monthly: periodStats(label: "28 days", records: monthlyRecords),
             source: "~/.claude sessions",
-            note: "This device"
+            note: nil
         )
     }
 
