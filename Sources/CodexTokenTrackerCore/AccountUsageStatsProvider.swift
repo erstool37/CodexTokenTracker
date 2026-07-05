@@ -11,30 +11,28 @@ public enum AccountUsageStatsProvider {
         let latestDate = buckets.map(\.date).max()
         let anchorDay = latestDate.map { calendar.startOfDay(for: $0) } ?? calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -6, to: anchorDay) ?? anchorDay
+        let monthStart = calendar.date(byAdding: .day, value: -27, to: anchorDay) ?? anchorDay
         let daily = periodStats(
-            label: "Daily",
+            label: "Today",
             buckets: buckets.filter { calendar.isDate($0.date, inSameDayAs: anchorDay) }
         )
         let weekly = periodStats(
-            label: "Weekly",
+            label: "7 days",
             buckets: buckets.filter { $0.date >= weekStart && $0.date <= anchorDay }
         )
-        let cumulative = cumulativeStats(from: response.summary)
-        let periods = cumulative.map { [daily, weekly, $0] } ?? [daily, weekly]
+        let monthly = periodStats(
+            label: "28 days",
+            buckets: buckets.filter { $0.date >= monthStart && $0.date <= anchorDay }
+        )
 
         return TokenUsageStats(
             today: daily,
             weekly: weekly,
-            monthly: cumulative ?? TokenUsagePeriodStats(
-                label: "Cumulative",
-                sessionCount: 0,
-                usage: .zero,
-                countLabel: "unavailable"
-            ),
+            monthly: monthly,
             source: "exact /usage",
             showsBreakdown: false,
             note: nil,
-            periods: periods
+            periods: [daily, weekly, monthly]
         )
     }
 
@@ -45,18 +43,6 @@ public enum AccountUsageStatsProvider {
             sessionCount: dayCount,
             usage: TokenUsageBreakdownDisplay(totalTokens: buckets.reduce(0) { $0 + $1.tokens }),
             countLabel: "\(dayCount) \(dayCount == 1 ? "day" : "days")"
-        )
-    }
-
-    private static func cumulativeStats(from summary: AccountTokenUsageSummaryDTO) -> TokenUsagePeriodStats? {
-        guard let lifetimeTokens = summary.lifetimeTokens else {
-            return nil
-        }
-        return TokenUsagePeriodStats(
-            label: "Cumulative",
-            sessionCount: 0,
-            usage: TokenUsageBreakdownDisplay(totalTokens: lifetimeTokens),
-            countLabel: "lifetime"
         )
     }
 
