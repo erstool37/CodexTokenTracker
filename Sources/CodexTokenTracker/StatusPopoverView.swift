@@ -227,6 +227,28 @@ private struct LimitBucketView: View {
     }
 }
 
+/// A linear usage bar drawn from capsules so its fill color is always honored.
+/// The system `ProgressView(.linear)` ignores `.tint` on macOS and falls back to
+/// the system accent (blue), which made the Claude pane's bars render blue.
+private struct UsageBar: View {
+    /// Filled fraction, 0...1.
+    let fraction: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.2))
+                Capsule()
+                    .fill(color)
+                    .frame(width: min(max(fraction, 0), 1) * geo.size.width)
+            }
+        }
+        .frame(height: 6)
+    }
+}
+
 private struct LimitWindowView: View {
     let window: LimitWindowDisplay
     @Environment(\.providerAccent) private var accent
@@ -242,9 +264,8 @@ private struct LimitWindowView: View {
                         .fontWeight(.semibold)
                         .monospacedDigit()
                 }
-                ProgressView(value: Double(window.percentLeft), total: 100)
-                    .progressViewStyle(.linear)
-                    .tint(window.warningLevel == .normal ? accent : window.warningLevel.progressColor)
+                UsageBar(fraction: Double(window.percentLeft) / 100,
+                         color: window.warningLevel == .normal ? accent : window.warningLevel.progressColor)
                     .accessibilityLabel(window.label)
                     .accessibilityValue("\(window.percentLeft) percent left")
                 if let resetsAtText = window.resetsAtText {
