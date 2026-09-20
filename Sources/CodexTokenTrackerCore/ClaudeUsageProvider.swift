@@ -394,6 +394,10 @@ public enum ClaudeUsageMapper {
         guard let limits else { return [] }
         return limits.enumerated().compactMap { index, limit in
             guard let usedPercent = limit.usedPercent else { return nil }
+            guard !LimitWindowVisibility.isHiddenClaudeLimit(
+                kind: limit.kind,
+                group: limit.group
+            ) else { return nil }
             let model = limit.scope?.model?.display_name
             let idParts = ["claude", limit.kind ?? limit.group, model]
                 .compactMap { $0 }
@@ -444,7 +448,7 @@ public enum ClaudeUsageMapper {
             )
         }
 
-        add(dto.five_hour, id: "claude-5h", label: "5h limit")
+        // `five_hour` is deliberately not added — see `LimitWindowVisibility`.
         add(dto.seven_day, id: "claude-7d", label: "Weekly limit")
         add(dto.seven_day_opus, id: "claude-7d-opus", label: "7d Opus")
         add(dto.seven_day_sonnet, id: "claude-7d-sonnet", label: "7d Sonnet")

@@ -143,24 +143,33 @@ public enum TokenUsageStatsProvider {
         var previousTotalUsage: TokenUsageBreakdownDisplay?
         var lineNumber = 0
 
+        // Per-chunk autorelease pool: `FileHandle.read(upToCount:)` returns autoreleased `Data`,
+        // which without a pool here accumulates for the entire scan instead of being reclaimed
+        // between chunks. See the same fix, and its measurements, in `ClaudeTokenUsageProvider`.
         while true {
-            guard let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
-                break
-            }
-            pendingLine.append(chunk)
-
-            while let newlineRange = pendingLine.firstRange(of: newlineData) {
-                let line = pendingLine.subdata(in: pendingLine.startIndex..<newlineRange.lowerBound)
-                pendingLine.removeSubrange(pendingLine.startIndex..<newlineRange.upperBound)
-                lineNumber += 1
-                if let record = tokenUsageRecord(
-                    from: line,
-                    decoder: decoder,
-                    previousTotalUsage: &previousTotalUsage,
-                    sourceID: "\(fileURL.path):\(lineNumber)"
-                ) {
-                    records.append(record)
+            let reachedEOF: Bool = autoreleasepool {
+                guard let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
+                    return true
                 }
+                pendingLine.append(chunk)
+
+                while let newlineRange = pendingLine.firstRange(of: newlineData) {
+                    let line = pendingLine.subdata(in: pendingLine.startIndex..<newlineRange.lowerBound)
+                    pendingLine.removeSubrange(pendingLine.startIndex..<newlineRange.upperBound)
+                    lineNumber += 1
+                    if let record = tokenUsageRecord(
+                        from: line,
+                        decoder: decoder,
+                        previousTotalUsage: &previousTotalUsage,
+                        sourceID: "\(fileURL.path):\(lineNumber)"
+                    ) {
+                        records.append(record)
+                    }
+                }
+                return false
+            }
+            if reachedEOF {
+                break
             }
         }
 

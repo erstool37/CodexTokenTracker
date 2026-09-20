@@ -24,6 +24,15 @@ public enum AccountUsageStatsProvider {
             label: "28 days",
             buckets: buckets.filter { $0.date >= monthStart && $0.date <= anchorDay }
         )
+        // Calendar month-to-date, which is the window a monthly allowance actually resets on —
+        // the rolling 28-day figure never lines up with the 1st of the month.
+        let calendarMonthStart = calendar.date(
+            from: calendar.dateComponents([.year, .month], from: anchorDay)
+        ) ?? anchorDay
+        let thisMonth = periodStats(
+            label: "This month",
+            buckets: buckets.filter { $0.date >= calendarMonthStart && $0.date <= anchorDay }
+        )
 
         return TokenUsageStats(
             today: daily,
@@ -32,7 +41,7 @@ public enum AccountUsageStatsProvider {
             source: "exact /usage",
             showsBreakdown: false,
             note: nil,
-            periods: [daily, weekly, monthly]
+            periods: [daily, weekly, thisMonth]
         )
     }
 
