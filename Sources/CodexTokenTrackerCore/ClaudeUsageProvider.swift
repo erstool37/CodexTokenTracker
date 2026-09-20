@@ -165,7 +165,11 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         // Aggregate local Claude Code transcripts and surface as the usage card.
         snapshot.onlineTokenStats = ClaudeTokenUsageProvider.load(now: fetchedAt)
 
-        if snapshot.limits.isEmpty {
+        // Whether the response was understood is a property of the *payload*, not of how many
+        // windows survive display filtering. Every window Anthropic currently reports is
+        // week-or-shorter and therefore hidden, so an empty `snapshot.limits` is the normal
+        // case — testing that here made a healthy response look like an unrecognized one.
+        if !decoded.hasRecognizableUsage {
             throw ClaudeUsageError.emptyShape(body: body)
         }
 
@@ -229,6 +233,19 @@ struct ClaudeUsageDTO: Decodable {
     let used_credits: Double?
     let monthly_credit_limit: Double?
     let balance: Double?
+
+    /// True when the payload carried any usage shape this build understands, whether or not the
+    /// resulting windows are then hidden from display. Used to tell a genuinely unrecognized
+    /// response apart from a well-formed one whose windows are all filtered out.
+    var hasRecognizableUsage: Bool {
+        if let limits, !limits.isEmpty {
+            return true
+        }
+        if five_hour != nil || seven_day != nil || seven_day_opus != nil || seven_day_sonnet != nil {
+            return true
+        }
+        return spend != nil || extra_usage != nil
+    }
 }
 
 /// One entry of the adaptive `limits[]` array. All optional so an unknown shape degrades to nil.
@@ -346,6 +363,17 @@ public enum ClaudeUsageMapper {
     public static func snapshot(fromJSON data: Data, now: Date) throws -> CodexStatusSnapshot {
         let dto = try JSONDecoder().decode(ClaudeUsageDTO.self, from: data)
         return snapshot(from: dto, now: now)
+    }
+
+    /// Whether a raw payload carried any usage shape this build understands. Exposed so the
+    /// check suite can pin the distinction that a regression once collapsed: a well-formed
+    /// response whose windows are all hidden is *recognized*, and must not be reported as an
+    /// error just because it produces no visible limit buckets.
+    public static func isRecognizableUsage(json data: Data) -> Bool {
+        guard let dto = try? JSONDecoder().decode(ClaudeUsageDTO.self, from: data) else {
+            return false
+        }
+        return dto.hasRecognizableUsage
     }
 
     static func snapshot(from dto: ClaudeUsageDTO, now: Date) -> CodexStatusSnapshot {

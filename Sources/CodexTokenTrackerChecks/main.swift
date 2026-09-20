@@ -290,6 +290,18 @@ expect(claudeMonthly.limits.count == 1, "a monthly Claude window produces a buck
 expect(claudeMonthly.limits[0].windows.map(\.label) == ["Monthly limit"], "the monthly window survives while session is hidden")
 expect(claudeMonthly.limits[0].windows[0].percentLeft == 70, "monthly percent left should map from `percent`")
 
+// Regression: a well-formed response whose windows are ALL hidden is still a recognized
+// response. Treating "no visible buckets" as "unrecognized shape" made the live Claude pane
+// fail with "Unrecognized usage response" once session and weekly were both hidden.
+expect(
+    ClaudeUsageMapper.isRecognizableUsage(json: claudeAdaptiveJSON),
+    "a payload whose windows are all hidden is still recognized"
+)
+expect(
+    !ClaudeUsageMapper.isRecognizableUsage(json: #"{"something_else": 1}"#.data(using: .utf8)!),
+    "a payload carrying no known usage shape is not recognized"
+)
+
 // When `limits[]` is absent, the legacy top-level fields still render (backward compatibility).
 let claudeLegacyJSON = """
 {
@@ -299,6 +311,10 @@ let claudeLegacyJSON = """
   "monthly_credit_limit": 10
 }
 """.data(using: .utf8)!
+expect(
+    ClaudeUsageMapper.isRecognizableUsage(json: claudeLegacyJSON),
+    "a legacy-shaped payload is recognized even though all its windows are hidden"
+)
 let claudeLegacy = try ClaudeUsageMapper.snapshot(fromJSON: claudeLegacyJSON, now: claudeNow)
 // Every legacy window field is week-or-shorter and therefore hidden, so the legacy path now
 // contributes only the credits line.
