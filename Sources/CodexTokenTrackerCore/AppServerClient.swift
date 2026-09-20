@@ -30,6 +30,7 @@ public protocol StatusProviding: Sendable {
 public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable {
     private let executableURL: URL
     private let decoder = JSONDecoder()
+    private let monthlyCreditsProvider = CodexMonthlyCreditsProvider()
 
     public init(executableURL: URL? = AppServerStatusProvider.defaultCodexURL()) {
         self.executableURL = executableURL
@@ -159,9 +160,21 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                     ? TokenUsageStatsProvider.load(for: accountDisplay, now: now)
                     : nil
             }
+            // The monthly credit allowance lives on a separate backend endpoint that the
+            // app-server never surfaces; see CodexMonthlyCreditsProvider. A failure there keeps
+            // the rest of the snapshot intact — the monthly bucket simply stays absent (or stale).
+            var limits = StatusMapper.limitDisplays(from: rateLimits, now: now)
+            let monthly = monthlyCreditsProvider.fetchSync(now: now)
+            if let credits = monthly.credits {
+                limits = CodexMonthlyCreditsMapper.merge(
+                    CodexMonthlyCreditsMapper.bucket(from: credits, now: now, stale: monthly.error != nil),
+                    into: limits
+                )
+            }
+
             return CodexStatusSnapshot(
                 account: accountDisplay,
-                limits: StatusMapper.limitDisplays(from: rateLimits, now: now),
+                limits: limits,
                 onlineTokenStats: onlineTokenStats,
                 onlineTokenStatsError: onlineTokenStatsError,
                 tokenStats: fallbackTokenStats,

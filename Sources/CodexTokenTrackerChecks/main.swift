@@ -845,6 +845,56 @@ if case let .loaded(snapshot) = await MainActor.run(body: { retryingOnlineUsageS
 let retryingOnlineUsageCalls = await retryingOnlineUsageProvider.callCount()
 expect(retryingOnlineUsageCalls == 2, "online usage error should retry once")
 
+// Codex monthly credits: the exact payload the spend-controls endpoint returned for this
+// account on 2026-09-20, mapped to the Codex pane's "Monthly credits" window.
+let monthlyNow = ISO8601DateFormatter().date(from: "2026-09-20T14:00:00Z")!
+var monthlyCalendar = Calendar(identifier: .gregorian)
+monthlyCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+let monthlyJSON = #"{"balance_unit":"credit","effective_monthly_limit":{"limit":7000,"enforcement_mode":"HARD_CAP","limit_mode":"amount_credits"},"current_month_usage":1780.1994230747223}"#
+    .data(using: .utf8)!
+let monthly = CodexMonthlyCreditsMapper.parse(json: monthlyJSON, now: monthlyNow)
+expect(monthly != nil, "the spend-controls payload parses")
+expect(monthly?.limit == 7000, "monthly limit is read from effective_monthly_limit.limit")
+expect(monthly?.balanceUnit == "credit", "balance unit is read")
+expect(abs((monthly?.percentUsed ?? 0) - 25.43) < 0.01, "percent used is used / limit — got \(monthly?.percentUsed ?? -1)")
+let monthlyBucket = CodexMonthlyCreditsMapper.bucket(from: monthly!, now: monthlyNow, calendar: monthlyCalendar)
+expect(monthlyBucket.id == "codex" && monthlyBucket.label == "Codex", "the monthly window lives in the Codex bucket")
+expect(monthlyBucket.windows.map(\.label) == ["Monthly credits"], "one window, labelled Monthly credits")
+expect(monthlyBucket.windows[0].percentLeft == 75, "75% of the monthly allowance is left")
+expect(monthlyBucket.creditsText == "1,780 / 7,000 credits", "credits line is used / limit — got \(monthlyBucket.creditsText ?? "nil")")
+expect(monthlyBucket.windows[0].resetsAtText?.contains("1 Oct") == true, "a monthly allowance resets on the 1st — got \(monthlyBucket.windows[0].resetsAtText ?? "nil")")
+expect(monthlyBucket.statusText == nil, "a fresh value carries no stale note")
+expect(
+    CodexMonthlyCreditsMapper.bucket(from: monthly!, now: monthlyNow, calendar: monthlyCalendar, stale: true).statusText != nil,
+    "a value served from cache after a failed refresh is marked stale"
+)
+
+// Merging: joins an existing codex bucket rather than duplicating it, and leads a new list.
+let existingCodex = LimitBucketDisplay(id: "codex", label: "Codex", windows: [], creditsText: nil)
+let merged = CodexMonthlyCreditsMapper.merge(monthlyBucket, into: [existingCodex])
+expect(merged.count == 1 && merged[0].windows.map(\.label) == ["Monthly credits"], "monthly window merges into the existing Codex bucket")
+expect(merged[0].creditsText == "1,780 / 7,000 credits", "merge carries the credits line")
+let mergedEmpty = CodexMonthlyCreditsMapper.merge(monthlyBucket, into: [])
+expect(mergedEmpty.count == 1 && mergedEmpty[0].id == "codex", "with no buckets the monthly bucket is added")
+
+// The desktop app hides its monthly panel for these shapes; so do we.
+expect(
+    CodexMonthlyCreditsMapper.parse(json: #"{"balance_unit":"credit","effective_monthly_limit":{"limit_mode":"unlimited_platform_max"},"current_month_usage":12}"#.data(using: .utf8)!, now: monthlyNow) == nil,
+    "an unlimited platform max is not a monthly limit"
+)
+expect(
+    CodexMonthlyCreditsMapper.parse(json: #"{"balance_unit":"credit","current_month_usage":12}"#.data(using: .utf8)!, now: monthlyNow) == nil,
+    "no effective_monthly_limit means no monthly window"
+)
+// A typed amount in the account's unit takes precedence over the plain limit.
+let typedLimit = CodexMonthlyCreditsMapper.parse(json: #"{"balance_unit":"credit","effective_monthly_limit":{"limit":1,"limit_amount":{"amount":5000,"unit":"credit"},"limit_mode":"amount_credits"},"current_month_usage":250}"#.data(using: .utf8)!, now: monthlyNow)
+expect(typedLimit?.limit == 5000, "limit_amount in the balance unit wins over the plain limit")
+expect(
+    CodexMonthlyCreditsProvider.endpointForTesting(accountID: "acct-1").absoluteString
+        == "https://chatgpt.com/backend-api/accounts/acct-1/spend-controls/current-user/monthly-usage?supports_usage_limit_modes=true",
+    "the endpoint matches the one the Codex desktop app calls"
+)
+
 // The local transcript scan — the app's most expensive operation — must not run until the
 // popover has actually been opened, so an app launched at login and never clicked does none of it.
 UsageDetailGate.resetForTesting()
