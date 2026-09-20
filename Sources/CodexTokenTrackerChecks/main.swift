@@ -895,6 +895,60 @@ expect(
     "the endpoint matches the one the Codex desktop app calls"
 )
 
+// Per-model credits + tokens. Shape and figures are from the live Codex-only response on
+// 2026-09-20 (two days of the real series, abridged).
+let breakdownJSON = """
+{
+  "units": "credits",
+  "data_freshness_ts": "2026-09-20T12:00:00Z",
+  "group_by": "day",
+  "data": [
+    { "date": "2026-09-16", "groups": [
+        { "dimensions": {"model": "gpt-5.6-sol"},   "credits": 1500.0, "text_total_tokens": 150000000 },
+        { "dimensions": {"model": "gpt-5.6-terra"}, "credits": 100.0,  "text_total_tokens": 30000000 },
+        { "dimensions": {"model": "gpt-5.5"},       "credits": 0.0,    "text_total_tokens": 4969825 }
+      ] },
+    { "date": "2026-09-20", "groups": [
+        { "dimensions": {"model": "gpt-5.6-sol"},   "credits": 94.69,  "text_total_tokens": 45856555 },
+        { "dimensions": {"model": "gpt-5.6-terra"}, "credits": 47.18,  "text_total_tokens": 18541483 },
+        { "dimensions": {"model": "gpt-image-2"},   "credits": 0.0,    "text_total_tokens": 0 }
+      ] }
+  ]
+}
+""".data(using: .utf8)!
+let breakdown = CodexCreditBreakdownMapper.parse(json: breakdownJSON, now: monthlyNow)
+expect(breakdown != nil, "the per-model breakdown parses")
+expect(
+    breakdown?.models.map(\.model) == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"],
+    "models are summed across days, ordered by credits, and zero/zero rows dropped — got \(breakdown?.models.map(\.model) ?? [])"
+)
+expect(abs((breakdown?.models[0].credits ?? 0) - 1594.69) < 0.001, "credits sum across days")
+expect(breakdown?.models[0].totalTokens == 195_856_555, "tokens sum across days")
+expect(abs((breakdown?.totalCredits ?? 0) - 1741.87) < 0.001, "total credits sum every model")
+expect(breakdown?.totalTokens == 249_367_863, "total tokens sum every model")
+expect(breakdown?.models[0].shortModel == "5.6-sol", "the gpt- prefix is dropped for display")
+expect(breakdown?.dataFreshness != nil, "data_freshness_ts is parsed, since this data lags the live figure")
+// A model that spent nothing and moved no tokens is not worth a row in a 190pt column.
+expect(breakdown?.models.contains { $0.model == "gpt-image-2" } == false, "all-zero models are dropped")
+// gpt-5.5 burned tokens on zero credits, so it must survive — dropping it would hide real usage.
+expect(breakdown?.models.last?.model == "gpt-5.5", "a model with tokens but no credits is kept")
+
+expect(CodexCreditBreakdownMapper.summaryText(breakdown!) == "1,742 credits · 249M tokens", "summary states both units — got \(CodexCreditBreakdownMapper.summaryText(breakdown!))")
+expect(CodexCreditBreakdownMapper.efficiencyText(breakdown!) == "143K tokens per credit", "efficiency ties the two units — got \(CodexCreditBreakdownMapper.efficiencyText(breakdown!) ?? "nil")")
+expect(CodexCreditBreakdownMapper.creditsText(6.74) == "6.7", "small credit values keep one decimal")
+expect(CodexCreditBreakdownMapper.creditsText(1594.69) == "1,595", "large credit values round to whole, grouped")
+expect(
+    CodexCreditBreakdownMapper.parse(json: #"{"data":[]}"#.data(using: .utf8)!, now: monthlyNow) == nil,
+    "an empty series yields no breakdown rather than an empty card"
+)
+
+// The request is month-to-date and Codex-only; dropping modes=codex would fold in Work.
+let breakdownURL = CodexCreditBreakdownProvider.endpointForTesting(now: monthlyNow, calendar: monthlyCalendar).absoluteString
+expect(breakdownURL.contains("start_date=2026-09-01"), "the window starts on the 1st — got \(breakdownURL)")
+expect(breakdownURL.contains("end_date=2026-09-20"), "the window ends today")
+expect(breakdownURL.contains("modes=codex"), "Codex only")
+expect(breakdownURL.contains("breakdown_by=model"), "broken down by model")
+
 // The local transcript scan — the app's most expensive operation — must not run until the
 // popover has actually been opened, so an app launched at login and never clicked does none of it.
 UsageDetailGate.resetForTesting()

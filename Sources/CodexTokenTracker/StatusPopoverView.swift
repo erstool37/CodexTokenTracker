@@ -189,6 +189,9 @@ private struct SnapshotView: View {
                     localTokenStats: snapshot.tokenStats
                 )
             }
+            if let breakdown = snapshot.creditBreakdown {
+                CreditBreakdownView(breakdown: breakdown)
+            }
             freshness
         }
     }
@@ -427,6 +430,67 @@ private struct UsageStatsCardView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+        }
+        .padding(5)
+        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// Per-model credits and tokens for the month, Codex only.
+///
+/// Credits are the scarce resource, so they lead each row and order the list; the token count
+/// sits beneath in secondary text. The footer states the pair once and then the rate that ties
+/// the two units together — without it, a model with few credits and enormous token counts looks
+/// the same as one that is genuinely cheap.
+private struct CreditBreakdownView: View {
+    let breakdown: CodexCreditBreakdown
+    @Environment(\.providerAccent) private var accent
+
+    /// The column is ~190pt wide; beyond a handful of rows this stops being readable, and the
+    /// tail models are rounding error anyway.
+    private static let maxRows = 5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Credits by model")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
+
+            ForEach(breakdown.models.prefix(Self.maxRows)) { model in
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(model.shortModel)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Text(CodexCreditBreakdownMapper.creditsText(model.credits))
+                            .fontWeight(.semibold)
+                            .monospacedDigit()
+                    }
+                    HStack {
+                        Spacer()
+                        Text(StatusFormatter.compactTokenCount(model.totalTokens))
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+                }
+                .font(.caption2)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(CodexCreditBreakdownMapper.summaryText(breakdown))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let efficiency = CodexCreditBreakdownMapper.efficiencyText(breakdown) {
+                    Text(efficiency)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(5)
         .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))

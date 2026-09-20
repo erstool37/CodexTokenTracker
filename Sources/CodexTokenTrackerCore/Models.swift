@@ -6,6 +6,9 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
     public var onlineTokenStats: TokenUsageStats?
     public var onlineTokenStatsError: String?
     public var tokenStats: TokenUsageStats?
+    /// Per-model credits and tokens for the month (Codex only). Nil for providers that have no
+    /// such concept, which is every provider but Codex.
+    public var creditBreakdown: CodexCreditBreakdown?
     public var refreshedAt: Date
     public var source: String
 
@@ -15,6 +18,7 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
         onlineTokenStats: TokenUsageStats? = nil,
         onlineTokenStatsError: String? = nil,
         tokenStats: TokenUsageStats? = nil,
+        creditBreakdown: CodexCreditBreakdown? = nil,
         refreshedAt: Date,
         source: String = "codex app-server"
     ) {
@@ -23,6 +27,7 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
         self.onlineTokenStats = onlineTokenStats
         self.onlineTokenStatsError = onlineTokenStatsError
         self.tokenStats = tokenStats
+        self.creditBreakdown = creditBreakdown
         self.refreshedAt = refreshedAt
         self.source = source
     }

@@ -117,33 +117,12 @@ public final class CodexMonthlyCreditsProvider: @unchecked Sendable {
 
     private func performFetchSync(now: Date, timeout: TimeInterval) throws -> CodexMonthlyCredits {
         let auth = try CodexAuthFile.read(from: authFileURL)
-        var request = URLRequest(url: Self.endpoint(accountID: auth.accountID))
-        request.timeoutInterval = timeout
-        request.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue(auth.accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
-        request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
-        request.setValue("codex", forHTTPHeaderField: "OAI-App-Brand")
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: (Data?, URLResponse?, Error?) = (nil, nil, nil)
-        session.dataTask(with: request) { data, response, error in
-            result = (data, response, error)
-            semaphore.signal()
-        }.resume()
-        semaphore.wait()
-
-        if let error = result.2 {
-            throw error
-        }
-        guard let http = result.1 as? HTTPURLResponse, let data = result.0 else {
-            throw CodexMonthlyCreditsError.unrecognizedResponse
-        }
-        guard http.statusCode == 200 else {
-            throw CodexMonthlyCreditsError.http(status: http.statusCode)
-        }
+        let request = CodexBackendRequest.make(
+            url: Self.endpoint(accountID: auth.accountID),
+            auth: auth,
+            timeout: timeout
+        )
+        let data = try CodexBackendRequest.performSync(request, session: session)
         guard let parsed = CodexMonthlyCreditsMapper.parse(json: data, now: now) else {
             throw CodexMonthlyCreditsError.unrecognizedResponse
         }
@@ -160,13 +139,6 @@ public final class CodexMonthlyCreditsProvider: @unchecked Sendable {
         components.queryItems = [URLQueryItem(name: "supports_usage_limit_modes", value: "true")]
         return components.url!
     }
-
-    /// Identify as the CLI: the API allow-lists this originator, and the desktop app's own
-    /// requests carry the same shape.
-    private static let userAgent: String = {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        return "codex_cli_rs/0.155.0 (Mac OS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion); arm64) CodexTokenTracker"
-    }()
 }
 
 // MARK: - Auth file
