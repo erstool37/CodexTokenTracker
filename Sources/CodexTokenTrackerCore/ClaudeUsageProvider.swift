@@ -476,9 +476,10 @@ public enum ClaudeUsageMapper {
             )
         }
 
-        // Every legacy field here describes a week-or-shorter window, all of which are hidden —
-        // see `LimitWindowVisibility`. The fallback therefore contributes no windows; it stays so
-        // that a future longer-window legacy field has an obvious place to be added.
+        add(dto.five_hour, id: "claude-5h", label: "5h limit")
+        add(dto.seven_day, id: "claude-7d", label: "Weekly limit")
+        add(dto.seven_day_opus, id: "claude-7d-opus", label: "7d Opus")
+        add(dto.seven_day_sonnet, id: "claude-7d-sonnet", label: "7d Sonnet")
         return windows
     }
 

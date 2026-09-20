@@ -222,17 +222,23 @@ expect(LimitWarningLevel(percentLeft: 10) == .warning, "limits at 10% remaining 
 expect(LimitWarningLevel(percentLeft: 5) == .critical, "limits at 5% remaining should be critical")
 expect(LimitWarningLevel(percentLeft: 0) == .critical, "depleted limits should be critical")
 
-// The hide rule is duration-based, so it covers a renamed or newly introduced short window.
-expect(LimitWindowVisibility.isHidden(windowMinutes: 300), "the 5h window is hidden")
-expect(LimitWindowVisibility.isHidden(windowMinutes: 60), "a 1h window is shorter still and also hidden")
-expect(LimitWindowVisibility.isHidden(windowMinutes: 10_080), "the weekly window is hidden")
-expect(!LimitWindowVisibility.isHidden(windowMinutes: 10_081), "anything longer than a week stays visible")
-expect(!LimitWindowVisibility.isHidden(windowMinutes: 43_200), "a monthly window stays visible")
-expect(!LimitWindowVisibility.isHidden(windowMinutes: nil), "an unknown duration is kept unless the slot is known to be short")
+// Codex hides week-or-shorter windows; the rule is duration-based, so it covers a renamed or
+// newly introduced short window.
+expect(LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: 300), "the Codex 5h window is hidden")
+expect(LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: 60), "a 1h window is shorter still and also hidden")
+expect(LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: 10_080), "the Codex weekly window is hidden")
+expect(!LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: 10_081), "anything longer than a week stays visible")
+expect(!LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: 43_200), "a monthly Codex window stays visible")
+expect(!LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: nil), "an unknown duration is kept unless the slot is known to be short")
 expect(
-    LimitWindowVisibility.isHidden(windowMinutes: nil, treatUnknownAsHidden: true),
-    "a known-short slot with no reported duration is hidden"
+    LimitWindowVisibility.isHiddenCodexWindow(windowMinutes: nil, treatUnknownAsHidden: true),
+    "a known-short Codex slot with no reported duration is hidden"
 )
+
+// Claude is the opposite: its short windows are exactly what that pane is watched for.
+expect(!LimitWindowVisibility.isHiddenClaudeLimit(kind: "session", group: "session"), "the Claude 5h limit is shown")
+expect(!LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_all", group: "weekly"), "the Claude weekly limit is shown")
+expect(!LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_scoped", group: "weekly"), "a model-scoped Claude weekly window is shown")
 
 // Adaptive Claude usage: the self-describing `limits[]` array drives the windows so newly
 // introduced limits (e.g. a per-model weekly "Fable" window) render with no code change.
@@ -253,26 +259,16 @@ let claudeAdaptiveJSON = """
 }
 """.data(using: .utf8)!
 let claudeSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
-// Every window Anthropic currently reports is week-or-shorter, and all of those are hidden, so
-// with spend and extra_usage disabled the Claude pane contributes no limit buckets at all. The
-// usage card carries that pane instead.
-expect(claudeSnapshot.limits.isEmpty, "all Claude windows are week-or-shorter and hidden — got \(claudeSnapshot.limits.count) bucket(s)")
+expect(claudeSnapshot.limits.count == 1, "Claude maps to a single bucket")
+let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
 expect(
-    LimitWindowVisibility.isHiddenClaudeLimit(kind: "session", group: "session"),
-    "the Claude session limit is hidden"
+    claudeLabels == ["5h limit", "Weekly limit", "Weekly · Fable"],
+    "Claude keeps its 5h and weekly windows, including Fable — got \(claudeLabels)"
 )
-expect(
-    LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_all", group: "weekly"),
-    "the Claude weekly limit is hidden"
-)
-expect(
-    LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_scoped", group: "weekly"),
-    "a model-scoped weekly window (Fable) is hidden too"
-)
-expect(
-    !LimitWindowVisibility.isHiddenClaudeLimit(kind: "monthly_all", group: "monthly"),
-    "a monthly Claude window, should one appear, stays visible"
-)
+expect(claudeSnapshot.limits[0].windows[0].percentLeft == 89, "session percent left should map from `percent`")
+expect(claudeSnapshot.limits[0].windows[2].percentLeft == 60, "Fable percent left should map from `percent`")
+expect(claudeSnapshot.limits[0].windows[2].resetsAtText != nil, "Fable window should carry a reset time")
+expect(claudeSnapshot.limits[0].creditsText == nil, "disabled spend/extra_usage should show no credits line")
 
 // A longer-than-weekly Claude window renders if Anthropic ever reports one.
 let claudeMonthlyJSON = """
@@ -287,8 +283,11 @@ let claudeMonthlyJSON = """
 """.data(using: .utf8)!
 let claudeMonthly = try ClaudeUsageMapper.snapshot(fromJSON: claudeMonthlyJSON, now: claudeNow)
 expect(claudeMonthly.limits.count == 1, "a monthly Claude window produces a bucket")
-expect(claudeMonthly.limits[0].windows.map(\.label) == ["Monthly limit"], "the monthly window survives while session is hidden")
-expect(claudeMonthly.limits[0].windows[0].percentLeft == 70, "monthly percent left should map from `percent`")
+expect(
+    claudeMonthly.limits[0].windows.map(\.label) == ["5h limit", "Monthly limit"],
+    "a monthly Claude window renders alongside the session window"
+)
+expect(claudeMonthly.limits[0].windows[1].percentLeft == 70, "monthly percent left should map from `percent`")
 
 // Regression: a well-formed response whose windows are ALL hidden is still a recognized
 // response. Treating "no visible buckets" as "unrecognized shape" made the live Claude pane
@@ -316,9 +315,11 @@ expect(
     "a legacy-shaped payload is recognized even though all its windows are hidden"
 )
 let claudeLegacy = try ClaudeUsageMapper.snapshot(fromJSON: claudeLegacyJSON, now: claudeNow)
-// Every legacy window field is week-or-shorter and therefore hidden, so the legacy path now
-// contributes only the credits line.
-expect(claudeLegacy.limits.first?.windows.isEmpty == true, "legacy 5h/weekly fields are hidden like their limits[] equivalents")
+expect(
+    claudeLegacy.limits.first?.windows.map(\.label) == ["5h limit", "Weekly limit"],
+    "legacy fields render when limits[] is missing"
+)
+expect(claudeLegacy.limits.first?.windows.first?.percentLeft == 75, "legacy 5h percent left should map")
 expect(claudeLegacy.limits.first?.creditsText == "3/10 credits", "legacy credits should render")
 
 // The shared adaptive labeler humanizes never-before-seen identifiers legibly.

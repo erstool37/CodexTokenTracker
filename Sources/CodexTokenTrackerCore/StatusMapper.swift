@@ -83,17 +83,17 @@ public enum StatusMapper {
 
     private static func limitDisplay(key: String, snapshot: RateLimitSnapshotDTO, now: Date) -> LimitBucketDisplay? {
         var windows: [LimitWindowDisplay] = []
-        // `primary` (5h) and `secondary` (weekly) are both hidden. An unreported duration in
-        // either slot is a short window by convention — that is what their fallback labels mean.
+        // Codex is read against a monthly allowance, so its 5h (`primary`) and weekly
+        // (`secondary`) windows stay hidden; only a monthly-or-longer window renders.
         if let primary = snapshot.primary,
-           !LimitWindowVisibility.isHidden(
+           !LimitWindowVisibility.isHiddenCodexWindow(
                windowMinutes: primary.windowDurationMins,
                treatUnknownAsHidden: true
            ) {
             windows.append(windowDisplay(id: "\(key)-primary", window: primary, fallback: "5h limit", now: now))
         }
         if let secondary = snapshot.secondary,
-           !LimitWindowVisibility.isHidden(
+           !LimitWindowVisibility.isHiddenCodexWindow(
                windowMinutes: secondary.windowDurationMins,
                treatUnknownAsHidden: true
            ) {
