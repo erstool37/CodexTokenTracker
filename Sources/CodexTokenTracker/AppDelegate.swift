@@ -4,9 +4,13 @@ import CodexTokenTrackerCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = StatusStore()
+    // No fast 5s/20s retries for Claude: the usage endpoint answers rate-limits with a long
+    // Retry-After, so quick retries only re-trip it. Cadence is the provider's throttle plus the
+    // store's 10-minute ticker; the provider serves cached data in between.
     private let claudeStore = StatusStore(
         provider: ClaudeUsageProvider(),
-        tokenStatsLoader: { _, _ in nil }
+        tokenStatsLoader: { _, _ in nil },
+        refreshRetryPolicy: .disabled
     )
     private var statusController: StatusBarController?
 

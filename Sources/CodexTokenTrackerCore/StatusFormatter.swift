@@ -18,7 +18,15 @@ public enum StatusFormatter {
             return "5h limit"
         case 10_080:
             return "Weekly limit"
+        case 43_200:
+            return "Monthly limit"
         default:
+            // Monthly (30-day) windows and their multiples first, so a 43_200-min GPT/Codex
+            // window renders as "Monthly limit" rather than the less obvious "30d limit".
+            if minutes % 43_200 == 0 {
+                let months = minutes / 43_200
+                return months == 1 ? "Monthly limit" : "\(months)mo limit"
+            }
             if minutes % 10_080 == 0 {
                 let weeks = minutes / 10_080
                 return weeks == 1 ? "Weekly limit" : "\(weeks)w limit"
