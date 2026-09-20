@@ -195,23 +195,43 @@ let decoded = try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: 
 let buckets = StatusMapper.limitDisplays(from: decoded, now: Date(timeIntervalSince1970: 1_700_000_000))
 expect(buckets.count == 1, "Spark/model-specific buckets should be hidden")
 expect(buckets[0].label == "Codex", "codex bucket should be labeled Codex")
-expect(buckets[0].windows.map(\.label) == ["Weekly limit"], "the 5h session window is hidden; weekly remains")
-expect(buckets[0].windows[0].showsNumericUsage == true, "weekly windows should render numeric usage")
+expect(buckets[0].windows.isEmpty, "both the 5h and weekly windows are hidden, leaving no windows")
+expect(buckets[0].creditsText != nil, "a bucket with no visible windows still survives to show its credits")
+
+// With no credits either, a bucket whose only windows are hidden drops out entirely.
+let windowsOnlyJSON = """
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "codex",
+    "primary": { "usedPercent": 25.0, "windowDurationMins": 300, "resetsAt": null },
+    "secondary": { "usedPercent": 40.4, "windowDurationMins": 10080, "resetsAt": null },
+    "credits": null,
+    "planType": "edu",
+    "rateLimitReachedType": null
+  }
+}
+""".data(using: .utf8)!
+let windowsOnly = try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: windowsOnlyJSON)
+expect(
+    StatusMapper.limitDisplays(from: windowsOnly, now: Date(timeIntervalSince1970: 1_700_000_000)).isEmpty,
+    "a bucket with only hidden windows and no credits drops out entirely"
+)
 expect(LimitWarningLevel(percentLeft: 11) == .normal, "limits above 10% remaining should stay normal")
 expect(LimitWarningLevel(percentLeft: 10) == .warning, "limits at 10% remaining should warn")
 expect(LimitWarningLevel(percentLeft: 5) == .critical, "limits at 5% remaining should be critical")
 expect(LimitWarningLevel(percentLeft: 0) == .critical, "depleted limits should be critical")
-expect(buckets[0].windows[0].warningLevel == .normal, "weekly window should expose its warning level")
 
 // The hide rule is duration-based, so it covers a renamed or newly introduced short window.
-expect(LimitWindowVisibility.isHidden(windowMinutes: 300), "a 300-minute window is the session window")
+expect(LimitWindowVisibility.isHidden(windowMinutes: 300), "the 5h window is hidden")
 expect(LimitWindowVisibility.isHidden(windowMinutes: 60), "a 1h window is shorter still and also hidden")
-expect(!LimitWindowVisibility.isHidden(windowMinutes: 10_080), "the weekly window stays visible")
+expect(LimitWindowVisibility.isHidden(windowMinutes: 10_080), "the weekly window is hidden")
+expect(!LimitWindowVisibility.isHidden(windowMinutes: 10_081), "anything longer than a week stays visible")
 expect(!LimitWindowVisibility.isHidden(windowMinutes: 43_200), "a monthly window stays visible")
-expect(!LimitWindowVisibility.isHidden(windowMinutes: nil), "an unknown duration is kept unless it is the primary slot")
+expect(!LimitWindowVisibility.isHidden(windowMinutes: nil), "an unknown duration is kept unless the slot is known to be short")
 expect(
-    LimitWindowVisibility.isHidden(windowMinutes: nil, treatUnknownAsSession: true),
-    "the primary slot with no reported duration is treated as the session window"
+    LimitWindowVisibility.isHidden(windowMinutes: nil, treatUnknownAsHidden: true),
+    "a known-short slot with no reported duration is hidden"
 )
 
 // Adaptive Claude usage: the self-describing `limits[]` array drives the windows so newly
@@ -233,21 +253,42 @@ let claudeAdaptiveJSON = """
 }
 """.data(using: .utf8)!
 let claudeSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
-expect(claudeSnapshot.limits.count == 1, "Claude maps to a single bucket")
-let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
-expect(claudeLabels == ["Weekly limit", "Weekly · Fable"], "limits[] drives windows adaptively, including Fable, with the session window hidden — got \(claudeLabels)")
-expect(claudeSnapshot.limits[0].windows[0].percentLeft == 98, "weekly percent left should map from `percent`")
-expect(claudeSnapshot.limits[0].windows[1].percentLeft == 60, "Fable percent left should map from `percent`")
-expect(claudeSnapshot.limits[0].windows[1].resetsAtText != nil, "Fable window should carry a reset time")
+// Every window Anthropic currently reports is week-or-shorter, and all of those are hidden, so
+// with spend and extra_usage disabled the Claude pane contributes no limit buckets at all. The
+// usage card carries that pane instead.
+expect(claudeSnapshot.limits.isEmpty, "all Claude windows are week-or-shorter and hidden — got \(claudeSnapshot.limits.count) bucket(s)")
 expect(
     LimitWindowVisibility.isHiddenClaudeLimit(kind: "session", group: "session"),
     "the Claude session limit is hidden"
 )
 expect(
-    !LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_all", group: "weekly"),
-    "the Claude weekly limit stays visible"
+    LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_all", group: "weekly"),
+    "the Claude weekly limit is hidden"
 )
-expect(claudeSnapshot.limits[0].creditsText == nil, "disabled spend/extra_usage should show no credits line")
+expect(
+    LimitWindowVisibility.isHiddenClaudeLimit(kind: "weekly_scoped", group: "weekly"),
+    "a model-scoped weekly window (Fable) is hidden too"
+)
+expect(
+    !LimitWindowVisibility.isHiddenClaudeLimit(kind: "monthly_all", group: "monthly"),
+    "a monthly Claude window, should one appear, stays visible"
+)
+
+// A longer-than-weekly Claude window renders if Anthropic ever reports one.
+let claudeMonthlyJSON = """
+{
+  "limits": [
+    { "kind": "session", "group": "session", "percent": 11, "resets_at": null },
+    { "kind": "monthly_all", "group": "monthly", "percent": 30, "resets_at": null }
+  ],
+  "extra_usage": { "is_enabled": false },
+  "spend": { "enabled": false }
+}
+""".data(using: .utf8)!
+let claudeMonthly = try ClaudeUsageMapper.snapshot(fromJSON: claudeMonthlyJSON, now: claudeNow)
+expect(claudeMonthly.limits.count == 1, "a monthly Claude window produces a bucket")
+expect(claudeMonthly.limits[0].windows.map(\.label) == ["Monthly limit"], "the monthly window survives while session is hidden")
+expect(claudeMonthly.limits[0].windows[0].percentLeft == 70, "monthly percent left should map from `percent`")
 
 // When `limits[]` is absent, the legacy top-level fields still render (backward compatibility).
 let claudeLegacyJSON = """
@@ -259,8 +300,9 @@ let claudeLegacyJSON = """
 }
 """.data(using: .utf8)!
 let claudeLegacy = try ClaudeUsageMapper.snapshot(fromJSON: claudeLegacyJSON, now: claudeNow)
-expect(claudeLegacy.limits.first?.windows.map(\.label) == ["Weekly limit"], "legacy fields render when limits[] is missing, minus the hidden 5h window")
-expect(claudeLegacy.limits.first?.windows.first?.percentLeft == 40, "legacy weekly percent left should map")
+// Every legacy window field is week-or-shorter and therefore hidden, so the legacy path now
+// contributes only the credits line.
+expect(claudeLegacy.limits.first?.windows.isEmpty == true, "legacy 5h/weekly fields are hidden like their limits[] equivalents")
 expect(claudeLegacy.limits.first?.creditsText == "3/10 credits", "legacy credits should render")
 
 // The shared adaptive labeler humanizes never-before-seen identifiers legibly.
@@ -438,10 +480,26 @@ expect(stats.today.sessionCount == 1, "today stats should include only today's s
 expect(stats.today.usage.totalTokens == 500, "today stats should sum today's sessions")
 expect(stats.weekly.sessionCount == 2, "weekly stats should include only last 7 days")
 expect(stats.weekly.usage.totalTokens == 1_500, "weekly stats should sum recent sessions")
-expect(stats.monthly.label == "28 days", "monthly stats should be shown as a rolling 28-day window")
-expect(stats.monthly.sessionCount == 3, "monthly stats should include last 28 days")
-expect(stats.monthly.usage.totalTokens == 3_500, "monthly stats should sum 28-day sessions")
-expect(stats.periods.map(\.label) == ["Today", "7 days", "28 days"], "token stats should expose periods in display order")
+// statsNow is 2023-11-14, so month-to-date starts 2023-11-01: the today, -2d and -10d records
+// all fall inside November, while the -40d record (2023-10-05) does not.
+expect(stats.monthly.label == "This month", "monthly stats should be shown as calendar month-to-date")
+expect(stats.monthly.sessionCount == 3, "month-to-date should include sessions since the 1st")
+expect(stats.monthly.usage.totalTokens == 3_500, "month-to-date should sum sessions since the 1st")
+expect(stats.periods.map(\.label) == ["Today", "7 days", "This month"], "token stats should expose periods in display order")
+
+// A record from the previous calendar month is excluded even when it is inside a rolling 28 days.
+let crossMonthNow = Date(timeIntervalSince1970: 1_701_000_000) // 2023-11-26
+let crossMonthStats = TokenUsageStatsProvider.stats(from: [
+    TokenUsageSessionRecord(
+        updatedAt: Date(timeIntervalSince1970: 1_698_800_000), // 2023-11-01, same month
+        usage: TokenUsageBreakdownDisplay(totalTokens: 10)
+    ),
+    TokenUsageSessionRecord(
+        updatedAt: Date(timeIntervalSince1970: 1_698_600_000), // 2023-10-29, previous month
+        usage: TokenUsageBreakdownDisplay(totalTokens: 99)
+    )
+], now: crossMonthNow, calendar: statsCalendar)
+expect(crossMonthStats.monthly.usage.totalTokens == 10, "month-to-date must exclude the previous calendar month even within 28 days")
 expect(stats.maxPeriodTotalTokens == 3_500, "token stats should expose the largest period total for visualization")
 
 let temporaryCodexHome = FileManager.default.temporaryDirectory

@@ -7,8 +7,10 @@ public enum TokenUsageStatsProvider {
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
         now: Date = Date()
     ) -> TokenUsageStats {
-        let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
-        let records = sessionRecords(in: codexHome, modifiedSince: monthStart)
+        // 31 days, not 28: the longest period reported is calendar month-to-date, which on the
+        // 31st of a month reaches back 31 days.
+        let scanCutoff = now.addingTimeInterval(-31 * 24 * 60 * 60)
+        let records = sessionRecords(in: codexHome, modifiedSince: scanCutoff)
         return stats(from: records, now: now)
     }
 
@@ -19,8 +21,10 @@ public enum TokenUsageStatsProvider {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> TokenUsageStats {
-        let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
-        let records = sessionRecords(in: codexHome, modifiedSince: monthStart)
+        // 31 days, not 28: the longest period reported is calendar month-to-date, which on the
+        // 31st of a month reaches back 31 days.
+        let scanCutoff = now.addingTimeInterval(-31 * 24 * 60 * 60)
+        let records = sessionRecords(in: codexHome, modifiedSince: scanCutoff)
         return AccountTokenUsageLedgerStore(url: ledgerURL).stats(
             for: account,
             records: records,
@@ -35,8 +39,11 @@ public enum TokenUsageStatsProvider {
         calendar: Calendar = .current
     ) -> TokenUsageStats {
         let weekStart = now.addingTimeInterval(-7 * 24 * 60 * 60)
-        let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
         let todayStart = calendar.startOfDay(for: now)
+        // Calendar month-to-date, not a rolling 28 days: a monthly allowance resets on the 1st,
+        // and a rolling window never lines up with it.
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))
+            ?? todayStart
         let tomorrowStart = calendar.date(byAdding: .day, value: 1, to: todayStart) ?? now
         let todayRecords = records.filter { $0.updatedAt >= todayStart && $0.updatedAt < tomorrowStart && $0.updatedAt <= now }
         let weeklyRecords = records.filter { $0.updatedAt >= weekStart && $0.updatedAt <= now }
@@ -45,7 +52,7 @@ public enum TokenUsageStatsProvider {
         return TokenUsageStats(
             today: periodStats(label: "Today", records: todayRecords),
             weekly: periodStats(label: "7 days", records: weeklyRecords),
-            monthly: periodStats(label: "28 days", records: monthlyRecords),
+            monthly: periodStats(label: "This month", records: monthlyRecords),
             source: "~/.codex/sessions"
         )
     }

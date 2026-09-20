@@ -160,13 +160,24 @@ private struct SnapshotView: View {
     let snapshot: CodexStatusSnapshot
     let stale: Bool
 
+    /// Whether the usage card will render anything, which decides if an empty limits list is
+    /// really "no data" or just a provider with no monthly window to show.
+    private var hasUsageContent: Bool {
+        snapshot.onlineTokenStats != nil
+            || snapshot.onlineTokenStatsError != nil
+            || snapshot.tokenStats != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if snapshot.limits.isEmpty {
+            // Only a genuine absence of data earns the placeholder. Now that every week-or-shorter
+            // window is hidden by policy, an empty `limits` list is the normal state for a provider
+            // that reports no monthly limit — and the usage card below carries the pane instead.
+            if snapshot.limits.isEmpty && !hasUsageContent {
                 Text("No rate-limit data returned.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
+            } else if !snapshot.limits.isEmpty {
                 ForEach(snapshot.limits) { bucket in
                     LimitBucketView(bucket: bucket)
                 }

@@ -29,8 +29,11 @@ public enum ClaudeTokenUsageProvider {
             return nil
         }
 
-        let cutoff28 = now.addingTimeInterval(-28 * 24 * 60 * 60)
-        let records = transcriptRecords(under: projectsDir, modifiedSince: cutoff28, now: now)
+        // 31 days, not 28: the longest period reported is calendar month-to-date, which on the
+        // 31st of a month reaches back 31 days. A 28-day scan cutoff would silently drop the
+        // first days of that month.
+        let cutoff = now.addingTimeInterval(-31 * 24 * 60 * 60)
+        let records = transcriptRecords(under: projectsDir, modifiedSince: cutoff, now: now)
         guard !records.isEmpty else {
             return nil
         }
@@ -43,17 +46,20 @@ public enum ClaudeTokenUsageProvider {
     private static func stats(from records: [ClaudeTranscriptRecord], now: Date) -> TokenUsageStats {
         let calendar = Calendar.current
         let weekCutoff = now.addingTimeInterval(-7 * 24 * 60 * 60)
-        let monthCutoff = now.addingTimeInterval(-28 * 24 * 60 * 60)
         let todayStart = calendar.startOfDay(for: now)
+        // Calendar month-to-date, not a rolling 28 days: a monthly allowance resets on the 1st,
+        // and a rolling window never lines up with it.
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))
+            ?? todayStart
 
         let todayRecords = records.filter { $0.timestamp >= todayStart && $0.timestamp <= now }
         let weeklyRecords = records.filter { $0.timestamp >= weekCutoff && $0.timestamp <= now }
-        let monthlyRecords = records.filter { $0.timestamp >= monthCutoff && $0.timestamp <= now }
+        let monthlyRecords = records.filter { $0.timestamp >= monthStart && $0.timestamp <= now }
 
         return TokenUsageStats(
             today: periodStats(label: "Today", records: todayRecords),
             weekly: periodStats(label: "7 days", records: weeklyRecords),
-            monthly: periodStats(label: "28 days", records: monthlyRecords),
+            monthly: periodStats(label: "This month", records: monthlyRecords),
             source: "~/.claude sessions",
             note: nil
         )

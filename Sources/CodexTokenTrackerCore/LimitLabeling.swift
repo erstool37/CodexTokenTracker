@@ -63,6 +63,8 @@ public enum AdaptiveLabel {
             return "5h limit"
         case "weekly_all":
             return "Weekly limit"
+        case "monthly_all":
+            return "Monthly limit"
         default:
             break
         }
@@ -72,6 +74,8 @@ public enum AdaptiveLabel {
             return "5h limit"
         case "weekly":
             return "Weekly limit"
+        case "monthly":
+            return "Monthly limit"
         default:
             break
         }
@@ -88,6 +92,8 @@ public enum AdaptiveLabel {
         switch group {
         case "weekly":
             return "Weekly"
+        case "monthly":
+            return "Monthly"
         case "session":
             return "5h"
         default:

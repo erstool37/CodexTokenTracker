@@ -83,17 +83,20 @@ public enum StatusMapper {
 
     private static func limitDisplay(key: String, snapshot: RateLimitSnapshotDTO, now: Date) -> LimitBucketDisplay? {
         var windows: [LimitWindowDisplay] = []
-        // The `primary` slot is the short session window (300 min on every plan seen so far);
-        // it is hidden, so an unreported duration here counts as the session window too.
+        // `primary` (5h) and `secondary` (weekly) are both hidden. An unreported duration in
+        // either slot is a short window by convention — that is what their fallback labels mean.
         if let primary = snapshot.primary,
            !LimitWindowVisibility.isHidden(
                windowMinutes: primary.windowDurationMins,
-               treatUnknownAsSession: true
+               treatUnknownAsHidden: true
            ) {
             windows.append(windowDisplay(id: "\(key)-primary", window: primary, fallback: "5h limit", now: now))
         }
         if let secondary = snapshot.secondary,
-           !LimitWindowVisibility.isHidden(windowMinutes: secondary.windowDurationMins) {
+           !LimitWindowVisibility.isHidden(
+               windowMinutes: secondary.windowDurationMins,
+               treatUnknownAsHidden: true
+           ) {
             windows.append(windowDisplay(id: "\(key)-secondary", window: secondary, fallback: "Weekly limit", now: now))
         }
         let credits = StatusFormatter.creditsText(snapshot.credits)
