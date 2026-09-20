@@ -31,7 +31,7 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
     private let executableURL: URL
     private let decoder = JSONDecoder()
     private let monthlyCreditsProvider = CodexMonthlyCreditsProvider()
-    private let creditBreakdownProvider = CodexCreditBreakdownProvider()
+    private let creditUsageProvider = CodexCreditUsageProvider()
 
     public init(executableURL: URL? = AppServerStatusProvider.defaultCodexURL()) {
         self.executableURL = executableURL
@@ -173,11 +173,11 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                 )
             }
 
-            // Per-model credits + tokens, cached for 30 minutes because the server recomputes it
+            // Credit spend per period, cached for 30 minutes because the server recomputes it
             // only every few hours. Only worth fetching when the popover has been opened, since
             // nothing in the menu bar depends on it.
-            let creditBreakdown = UsageDetailGate.isOpen
-                ? creditBreakdownProvider.fetchSync(now: now)
+            let creditUsage = UsageDetailGate.isOpen
+                ? creditUsageProvider.fetchSync(now: now)
                 : nil
 
             return CodexStatusSnapshot(
@@ -186,7 +186,7 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                 onlineTokenStats: onlineTokenStats,
                 onlineTokenStatsError: onlineTokenStatsError,
                 tokenStats: fallbackTokenStats,
-                creditBreakdown: creditBreakdown,
+                creditUsage: creditUsage,
                 refreshedAt: now
             )
         } catch {

@@ -895,59 +895,69 @@ expect(
     "the endpoint matches the one the Codex desktop app calls"
 )
 
-// Per-model credits + tokens. Shape and figures are from the live Codex-only response on
-// 2026-09-20 (two days of the real series, abridged).
-let breakdownJSON = """
+// Codex credit spend per period. Shape and figures follow the live Codex-only response.
+// `now` is 2026-09-20T14:00Z, so "today" is 09-20, the 7-day window opens 09-14, and the
+// month opens 09-01. The 08-31 row must fall outside both totals.
+let creditUsageJSON = """
 {
   "units": "credits",
   "data_freshness_ts": "2026-09-20T12:00:00Z",
   "group_by": "day",
   "data": [
-    { "date": "2026-09-16", "groups": [
-        { "dimensions": {"model": "gpt-5.6-sol"},   "credits": 1500.0, "text_total_tokens": 150000000 },
-        { "dimensions": {"model": "gpt-5.6-terra"}, "credits": 100.0,  "text_total_tokens": 30000000 },
-        { "dimensions": {"model": "gpt-5.5"},       "credits": 0.0,    "text_total_tokens": 4969825 }
-      ] },
-    { "date": "2026-09-20", "groups": [
-        { "dimensions": {"model": "gpt-5.6-sol"},   "credits": 94.69,  "text_total_tokens": 45856555 },
-        { "dimensions": {"model": "gpt-5.6-terra"}, "credits": 47.18,  "text_total_tokens": 18541483 },
-        { "dimensions": {"model": "gpt-image-2"},   "credits": 0.0,    "text_total_tokens": 0 }
-      ] }
+    { "date": "2026-08-31", "groups": [ { "credits": 500.0 } ] },
+    { "date": "2026-09-01", "groups": [ { "credits": 10.0 } ] },
+    { "date": "2026-09-13", "groups": [ { "credits": 4.0 } ] },
+    { "date": "2026-09-14", "groups": [ { "credits": 1.0 } ] },
+    { "date": "2026-09-16", "groups": [ { "credits": 1522.21 } ] },
+    { "date": "2026-09-20", "groups": [ { "credits": 218.486 } ] }
   ]
 }
 """.data(using: .utf8)!
-let breakdown = CodexCreditBreakdownMapper.parse(json: breakdownJSON, now: monthlyNow)
-expect(breakdown != nil, "the per-model breakdown parses")
-expect(
-    breakdown?.models.map(\.model) == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"],
-    "models are summed across days, ordered by credits, and zero/zero rows dropped — got \(breakdown?.models.map(\.model) ?? [])"
-)
-expect(abs((breakdown?.models[0].credits ?? 0) - 1594.69) < 0.001, "credits sum across days")
-expect(breakdown?.models[0].totalTokens == 195_856_555, "tokens sum across days")
-expect(abs((breakdown?.totalCredits ?? 0) - 1741.87) < 0.001, "total credits sum every model")
-expect(breakdown?.totalTokens == 249_367_863, "total tokens sum every model")
-expect(breakdown?.models[0].shortModel == "5.6-sol", "the gpt- prefix is dropped for display")
-expect(breakdown?.dataFreshness != nil, "data_freshness_ts is parsed, since this data lags the live figure")
-// A model that spent nothing and moved no tokens is not worth a row in a 190pt column.
-expect(breakdown?.models.contains { $0.model == "gpt-image-2" } == false, "all-zero models are dropped")
-// gpt-5.5 burned tokens on zero credits, so it must survive — dropping it would hide real usage.
-expect(breakdown?.models.last?.model == "gpt-5.5", "a model with tokens but no credits is kept")
+let creditUsage = CodexCreditUsageMapper.parse(json: creditUsageJSON, now: monthlyNow)
+expect(creditUsage != nil, "the credit usage series parses")
+expect(abs((creditUsage?.today ?? 0) - 218.486) < 0.001, "today is the bucket matching today's date")
+// 09-14 (1) + 09-16 (1522.21) + 09-20 (218.486); 09-13 is one day too early.
+expect(abs((creditUsage?.sevenDays ?? 0) - 1741.696) < 0.001, "7 days is inclusive of today and spans 7 dates -- got \(creditUsage?.sevenDays ?? -1)")
+expect(abs((creditUsage?.thisMonth ?? 0) - 1755.696) < 0.001, "this month sums from the 1st -- got \(creditUsage?.thisMonth ?? -1)")
+expect(creditUsage?.periods.map(\.label) == ["Today", "7 days", "This month"], "periods render in order")
+expect(creditUsage?.dataFreshness != nil, "data_freshness_ts is parsed, since this data lags the live figure")
 
-expect(CodexCreditBreakdownMapper.summaryText(breakdown!) == "1,742 credits · 249M tokens", "summary states both units — got \(CodexCreditBreakdownMapper.summaryText(breakdown!))")
-expect(CodexCreditBreakdownMapper.efficiencyText(breakdown!) == "143K tokens per credit", "efficiency ties the two units — got \(CodexCreditBreakdownMapper.efficiencyText(breakdown!) ?? "nil")")
-expect(CodexCreditBreakdownMapper.creditsText(6.74) == "6.7", "small credit values keep one decimal")
-expect(CodexCreditBreakdownMapper.creditsText(1594.69) == "1,595", "large credit values round to whole, grouped")
+// Periods anchor on the latest published bucket, not on the clock: the server lags by hours and
+// a UTC+9 clock is on the next date for most of the UTC day, so anchoring on "now" would report
+// 0 every evening. Here `now` has run on to the 24th while the server has only published to the
+// 20th — the totals must be unchanged.
+let laterNow = ISO8601DateFormatter().date(from: "2026-09-24T02:00:00Z")!
+let anchored = CodexCreditUsageMapper.parse(json: creditUsageJSON, now: laterNow)
+expect(abs((anchored?.today ?? 0) - 218.486) < 0.001, "today follows the latest published bucket, not the clock")
+expect(abs((anchored?.sevenDays ?? 0) - (creditUsage?.sevenDays ?? -1)) < 0.001, "the 7-day window anchors on the same bucket")
+expect(abs((anchored?.thisMonth ?? 0) - (creditUsage?.thisMonth ?? -1)) < 0.001, "the month window anchors on the same bucket")
+
+// The flat shape, returned when no breakdown_by is requested, must total the same way.
+let flatJSON = """
+{ "data": [ { "date": "2026-09-20",
+              "premium_usage_values": { "total_usage_credits": { "cli": 200.0, "exec": 18.486 } } } ] }
+""".data(using: .utf8)!
 expect(
-    CodexCreditBreakdownMapper.parse(json: #"{"data":[]}"#.data(using: .utf8)!, now: monthlyNow) == nil,
-    "an empty series yields no breakdown rather than an empty card"
+    abs((CodexCreditUsageMapper.parse(json: flatJSON, now: monthlyNow)?.today ?? 0) - 218.486) < 0.001,
+    "a day without groups[] is summed from premium_usage_values"
+)
+expect(
+    CodexCreditUsageMapper.parse(json: #"{"data":[]}"#.data(using: .utf8)!, now: monthlyNow) == nil,
+    "an empty series yields no card rather than three zeroes"
 )
 
-// The request is month-to-date and Codex-only; dropping modes=codex would fold in Work.
-let breakdownURL = CodexCreditBreakdownProvider.endpointForTesting(now: monthlyNow, calendar: monthlyCalendar).absoluteString
-expect(breakdownURL.contains("start_date=2026-09-01"), "the window starts on the 1st — got \(breakdownURL)")
-expect(breakdownURL.contains("end_date=2026-09-20"), "the window ends today")
-expect(breakdownURL.contains("modes=codex"), "Codex only")
-expect(breakdownURL.contains("breakdown_by=model"), "broken down by model")
+expect(CodexCreditUsageMapper.creditsText(6.74) == "6.7", "small credit values keep one decimal so a light day is not shown as 0")
+expect(CodexCreditUsageMapper.creditsText(1755.696) == "1,756", "large credit values round to whole, grouped")
+
+// The window must cover both periods: month-to-date alone would report the first days of a
+// month's trailing week as zero.
+let usageURL = CodexCreditUsageProvider.endpointForTesting(now: monthlyNow).absoluteString
+expect(usageURL.contains("start_date=2026-09-01"), "mid-month, the month start is the earlier bound -- got \(usageURL)")
+expect(usageURL.contains("end_date=2026-09-20"), "the window ends today")
+expect(usageURL.contains("modes=codex"), "Codex only")
+let earlyMonth = ISO8601DateFormatter().date(from: "2026-10-02T14:00:00Z")!
+let earlyURL = CodexCreditUsageProvider.endpointForTesting(now: earlyMonth).absoluteString
+expect(earlyURL.contains("start_date=2026-09-26"), "early in a month the window reaches back into the previous one -- got \(earlyURL)")
 
 // The local transcript scan — the app's most expensive operation — must not run until the
 // popover has actually been opened, so an app launched at login and never clicked does none of it.
