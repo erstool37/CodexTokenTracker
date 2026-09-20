@@ -845,4 +845,17 @@ if case let .loaded(snapshot) = await MainActor.run(body: { retryingOnlineUsageS
 let retryingOnlineUsageCalls = await retryingOnlineUsageProvider.callCount()
 expect(retryingOnlineUsageCalls == 2, "online usage error should retry once")
 
+// The local transcript scan — the app's most expensive operation — must not run until the
+// popover has actually been opened, so an app launched at login and never clicked does none of it.
+UsageDetailGate.resetForTesting()
+expect(!UsageDetailGate.isOpen, "the usage detail gate starts closed")
+expect(
+    ClaudeTokenUsageProvider.load(now: Date()) == nil,
+    "the Claude transcript scan is skipped while the popover has never been opened"
+)
+UsageDetailGate.open()
+expect(UsageDetailGate.isOpen, "opening the popover opens the gate")
+UsageDetailGate.open()
+expect(UsageDetailGate.isOpen, "the gate latches open rather than toggling")
+
 print("CodexTokenTracker checks passed")

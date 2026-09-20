@@ -22,14 +22,24 @@ public final class StatusStore: ObservableObject {
     private let now: @Sendable () -> Date
     private var refreshTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
-    private var staleTicker: Task<Void, Never>?
-    private var refreshTicker: Task<Void, Never>?
+    private var staleTicker: Timer?
+    private var refreshTicker: Timer?
     private var retryAttempt = 0
+    private var isPopoverVisible = false
+
+    /// How often the "Last refreshed" label re-renders while the popover is on screen.
+    static let staleTickInterval: TimeInterval = 60
+    /// Refresh cadence while the popover is open.
+    static let foregroundRefreshInterval: TimeInterval = 600
+    /// Refresh cadence while it is closed — only the menu-bar tint depends on it, and opening
+    /// the popover always refreshes immediately.
+    static let backgroundRefreshInterval: TimeInterval = 1_800
 
     public init(
         provider: StatusProviding = AppServerStatusProvider(),
         tokenStatsLoader: @escaping @Sendable (Date, AccountDisplay?) -> TokenUsageStats? = { date, account in
-            guard let account else {
+            // Deferred until the popover has been opened at least once — see `UsageDetailGate`.
+            guard let account, UsageDetailGate.isOpen else {
                 return nil
             }
             return TokenUsageStatsProvider.load(for: account, now: date)
@@ -41,25 +51,88 @@ public final class StatusStore: ObservableObject {
         self.tokenStatsLoader = tokenStatsLoader
         self.refreshRetryPolicy = refreshRetryPolicy
         self.now = now
-        staleTicker = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                self?.objectWillChange.send()
+        startRefreshTicker()
+    }
+
+    // MARK: - Power behavior
+
+    /// Told by the status-bar controller whether the popover is on screen.
+    ///
+    /// Two things follow from this, and both matter for battery on a widget that runs all day:
+    ///
+    /// - The stale ticker exists only to re-render the "Last refreshed" timestamp. Nobody can
+    ///   read it while the popover is closed, so running it then spent a wakeup a minute — plus
+    ///   a full SwiftUI invalidation of an off-screen view — for no visible effect.
+    /// - Background refreshes can be far less frequent than foreground ones. A Codex refresh
+    ///   spawns an entire `codex app-server` process, which is the most expensive thing this app
+    ///   does after launch, so doing it every 10 minutes while nobody is looking is waste.
+    ///   Opening the popover refreshes immediately regardless, so the background cadence only
+    ///   needs to keep the menu-bar warning tint roughly current.
+    public func setPopoverVisible(_ visible: Bool) {
+        guard isPopoverVisible != visible else {
+            return
+        }
+        isPopoverVisible = visible
+
+        if visible {
+            startStaleTicker()
+        } else {
+            staleTicker?.invalidate()
+            staleTicker = nil
+        }
+        // Re-arm at the cadence that now applies.
+        startRefreshTicker()
+    }
+
+    private func startStaleTicker() {
+        staleTicker?.invalidate()
+        staleTicker = Self.tick(every: Self.staleTickInterval, tolerance: 5) { [weak self] in
+            self?.objectWillChange.send()
+        }
+    }
+
+    private func startRefreshTicker() {
+        refreshTicker?.invalidate()
+        let interval = isPopoverVisible ? Self.foregroundRefreshInterval : Self.backgroundRefreshInterval
+        refreshTicker = Self.tick(every: interval, tolerance: interval / 4) { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    /// A repeating timer that lets macOS coalesce its firing with other work.
+    ///
+    /// `Task.sleep` offers no tolerance, so each sleep wakes the CPU at its own exact moment and
+    /// cannot be batched with anything else. `Timer.tolerance` lets the system slide the fire
+    /// time, which is what allows several timers across the system to share one wakeup — the
+    /// single most effective change available for a periodic background widget.
+    private static func tick(
+        every interval: TimeInterval,
+        tolerance: TimeInterval,
+        _ body: @escaping @MainActor () -> Void
+    ) -> Timer {
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                body()
             }
         }
-        refreshTicker = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(600))
-                self?.refresh()
-            }
-        }
+        timer.tolerance = tolerance
+        return timer
     }
 
     deinit {
         refreshTask?.cancel()
         retryTask?.cancel()
-        staleTicker?.cancel()
-        refreshTicker?.cancel()
+        // Timers are not Sendable, so they cannot be touched from a nonisolated deinit. They are
+        // invalidated in `stopTimers()`, which the app calls on termination; a scheduled timer
+        // also holds its target only weakly here, so nothing leaks if that call is missed.
+    }
+
+    /// Invalidate both tickers. Called when the app is shutting down.
+    public func stopTimers() {
+        staleTicker?.invalidate()
+        staleTicker = nil
+        refreshTicker?.invalidate()
+        refreshTicker = nil
     }
 
     public var currentSnapshot: CodexStatusSnapshot? {

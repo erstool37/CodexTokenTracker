@@ -19,8 +19,13 @@ import Foundation
 public enum ClaudeTokenUsageProvider {
     private static let cache = ClaudeTranscriptCache()
 
-    /// Entry point. Returns nil when no transcripts or usage are found.
+    /// Entry point. Returns nil when no transcripts or usage are found, and also while the
+    /// popover has never been opened — see `UsageDetailGate` for why the scan is deferred.
     public static func load(now: Date = Date()) -> TokenUsageStats? {
+        guard UsageDetailGate.isOpen else {
+            return nil
+        }
+
         let claudeHome = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude", isDirectory: true)
         let projectsDir = claudeHome.appendingPathComponent("projects", isDirectory: true)

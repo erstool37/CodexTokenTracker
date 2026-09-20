@@ -165,6 +165,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
 
         if !popover.isShown {
+            // The user is asking to see the usage card, so allow the local transcript scans that
+            // feed it. Until this point they are skipped entirely.
+            UsageDetailGate.open()
+            // Tell both stores they are on screen before refreshing: that starts the stale
+            // ticker and switches them to the foreground refresh cadence.
+            store.setPopoverVisible(true)
+            claudeStore.setPopoverVisible(true)
             store.refresh()
             claudeStore.refresh()
             popover.contentSize = constrainedContentSize(for: button)
@@ -234,6 +241,16 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             window.setFrame(frame, display: true)
         }
         window.makeKey()
+    }
+
+    // MARK: - NSPopoverDelegate
+
+    /// Drop back to the low-power cadence as soon as the popover leaves the screen: the stale
+    /// ticker stops entirely and refreshes slow down, since only the menu-bar tint still depends
+    /// on them. Covers dismissal by clicking away, not just the toggle action.
+    func popoverDidClose(_ notification: Notification) {
+        store.setPopoverVisible(false)
+        claudeStore.setPopoverVisible(false)
     }
 
     private func usableFrame(for screen: NSScreen) -> NSRect {

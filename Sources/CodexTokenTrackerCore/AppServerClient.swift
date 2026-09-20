@@ -151,7 +151,13 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
             case let .failure(error):
                 onlineTokenStats = nil
                 onlineTokenStatsError = error.localizedDescription
-                fallbackTokenStats = TokenUsageStatsProvider.load(for: accountDisplay, now: now)
+                // Only scan `~/.codex/sessions` if the user has actually opened the popover.
+                // This is the fallback path taken whenever `account/usage/read` times out, and
+                // it walks every session file — 772 MB here — so running it at launch spent the
+                // app's largest single cost on a card nobody was looking at. See UsageDetailGate.
+                fallbackTokenStats = UsageDetailGate.isOpen
+                    ? TokenUsageStatsProvider.load(for: accountDisplay, now: now)
+                    : nil
             }
             return CodexStatusSnapshot(
                 account: accountDisplay,
