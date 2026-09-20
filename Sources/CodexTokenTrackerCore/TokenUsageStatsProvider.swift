@@ -160,9 +160,15 @@ public enum TokenUsageStatsProvider {
                 }
                 pendingLine.append(chunk)
 
-                while let newlineRange = pendingLine.firstRange(of: newlineData) {
-                    let line = pendingLine.subdata(in: pendingLine.startIndex..<newlineRange.lowerBound)
-                    pendingLine.removeSubrange(pendingLine.startIndex..<newlineRange.upperBound)
+                // `memchr` rather than `Data.firstRange(of:)`: the latter goes through the
+                // generic DataProtocol path and dominated cold-scan CPU. See `ByteScanning`.
+                while let newline = ByteScanning.firstIndex(
+                    of: 0x0A,
+                    in: pendingLine,
+                    from: pendingLine.startIndex
+                ) {
+                    let line = pendingLine.subdata(in: pendingLine.startIndex..<newline)
+                    pendingLine.removeSubrange(pendingLine.startIndex..<pendingLine.index(after: newline))
                     lineNumber += 1
                     if let record = tokenUsageRecord(
                         from: line,

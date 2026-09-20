@@ -185,12 +185,12 @@ public enum ClaudeTokenUsageProvider {
                 }
                 pending.append(chunk)
 
-                while let newlineRange = pending[cursor...].firstRange(of: newlineData) {
-                    let line = pending[cursor..<newlineRange.lowerBound]
+                while let newline = ByteScanning.firstIndex(of: 0x0A, in: pending, from: cursor) {
+                    let line = pending[cursor..<newline]
                     if let record = parseLine(line) {
                         records.append(record)
                     }
-                    cursor = newlineRange.upperBound
+                    cursor = pending.index(after: newline)
                 }
 
                 if cursor > pending.startIndex {
@@ -219,8 +219,8 @@ public enum ClaudeTokenUsageProvider {
         // missing either marker cannot match. Both markers appear literally in the JSON text,
         // so this can only skip lines the full decode would also have rejected — a false
         // positive merely costs the decode we would have done anyway.
-        guard slice.firstRange(of: assistantMarker) != nil,
-              slice.firstRange(of: usageMarker) != nil else {
+        guard ByteScanning.contains(assistantMarker, in: slice),
+              ByteScanning.contains(usageMarker, in: slice) else {
             return nil
         }
 
@@ -283,9 +283,8 @@ public enum ClaudeTokenUsageProvider {
 
     private static let decoder = JSONDecoder()
 
-    private static let newlineData = Data([0x0A])
-    private static let assistantMarker = Data("\"assistant\"".utf8)
-    private static let usageMarker = Data("\"usage\"".utf8)
+    private static let assistantMarker = Array("\"assistant\"".utf8)
+    private static let usageMarker = Array("\"usage\"".utf8)
 }
 
 // MARK: - Internal record type
