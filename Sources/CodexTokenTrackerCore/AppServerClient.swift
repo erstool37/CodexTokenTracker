@@ -10,7 +10,7 @@ public enum AppServerClientError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .codexNotFound:
-            return "Could not find the codex executable in PATH, /opt/homebrew/bin, or /usr/local/bin."
+            return "Could not find the codex executable in PATH, ~/.local/bin, ~/.codex/packages/standalone, /opt/homebrew/bin, or /usr/local/bin."
         case let .launchFailed(message):
             return "Failed to launch codex app-server: \(message)"
         case .noResponse:
@@ -291,7 +291,12 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         let pathCandidates = ProcessInfo.processInfo.environment["PATH"]?
             .split(separator: ":")
             .map { String($0) + "/codex" } ?? []
+        // GUI apps inherit launchd's PATH, which omits ~/.local/bin where the
+        // standalone Codex installer places its symlink.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = pathCandidates + [
+            home + "/.local/bin/codex",
+            home + "/.codex/packages/standalone/current/bin/codex",
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
             "/usr/bin/codex"
