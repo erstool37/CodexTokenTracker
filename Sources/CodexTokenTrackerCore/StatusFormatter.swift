@@ -141,23 +141,25 @@ public enum StatusFormatter {
         else {
             return nil
         }
-        // Zero is shown: on credit-based plans a depleted balance is the state that matters.
-        if let intValue = Int(balance), intValue >= 0 {
-            return "\(intValue) credits"
+        // Zero and negative (overdrawn) balances are shown: on credit-based plans they are the
+        // states that matter. Formatted without Int conversion, which traps on inf/NaN/huge.
+        guard let value = Double(balance), value.isFinite else {
+            return nil
         }
-        if let value = Double(balance), value >= 0 {
-            return "\(Int(value.rounded())) credits"
-        }
-        return nil
+        return String(format: "%.0f credits", value.rounded())
     }
 
-    /// A backend decimal-string credit amount, rounded to a whole number when it parses.
+    /// A backend decimal-string credit amount at up to two decimals, trailing zeros dropped,
+    /// so it agrees with the bar's remaining percent.
     static func creditAmount(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = Double(trimmed) else {
             return trimmed
         }
-        return "\(Int(value.rounded()))"
+        var text = String(format: "%.2f", value)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text
     }
 }
 

@@ -247,13 +247,35 @@ let creditBuckets = StatusMapper.limitDisplays(
     now: Date(timeIntervalSince1970: 1_791_170_000)
 )
 expect(creditBuckets.count == 1, "credit-only bucket should not be dropped")
-expect(creditBuckets[0].windows.map(\.label) == ["Credit limit 48/50"], "spend cap should render as a credit bar, got \(creditBuckets[0].windows.map(\.label))")
+expect(creditBuckets[0].windows.map(\.label) == ["Credit limit 47.5/50"], "spend cap should render as a credit bar, got \(creditBuckets[0].windows.map(\.label))")
 expect(creditBuckets[0].windows[0].percentLeft == 5, "spend cap percent left should come from remainingPercent")
 expect(creditBuckets[0].windows[0].resetsAtText != nil, "spend cap should show its reset")
 expect(creditBuckets[0].creditsText == "0 credits", "depleted balance should show 0 credits")
-expect(creditBuckets[0].statusText == "Credit limit reached", "spendControlReached should surface")
+expect(creditBuckets[0].statusText == "Credit limit reached · Included usage unavailable — using credits", "spendControlReached and ordinaryUsageAllowed should both surface")
 let creditUsageOnly = try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: Data(String(decoding: creditPlanJSON, as: UTF8.self).replacingOccurrences(of: "true, \"planType\"", with: "false, \"planType\"").utf8))
 expect(StatusMapper.limitDisplays(from: creditUsageOnly)[0].statusText == "Included usage unavailable — using credits", "ordinaryUsageAllowed false should surface")
+let reachedOnlyJSON = #"{"rateLimits":{"limitId":"codex","credits":null,"individualLimit":null,"spendControlReached":true}}"#
+let reachedOnly = StatusMapper.limitDisplays(from: try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: Data(reachedOnlyJSON.utf8)))
+expect(reachedOnly.first?.statusText == "Credit limit reached", "a reached state with no bars should keep its bucket")
+func creditBalanceText(_ balance: String) -> String? {
+    let json = #"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":1},"credits":{"hasCredits":true,"unlimited":false,"balance":"\#(balance)"}}}"#
+    return StatusMapper.limitDisplays(from: try! JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: Data(json.utf8)))[0].creditsText
+}
+expect(creditBalanceText("1e400") == nil && creditBalanceText("nan") == nil, "non-finite balances should be hidden, not trap")
+expect(creditBalanceText("1e19") == "10000000000000000000 credits", "huge balances should not trap on Int conversion")
+expect(creditBalanceText("-3.5") == "-4 credits", "overdrawn balances should show")
+let depletedJSON = #"{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"codex","primary":{"usedPercent":100},"rateLimitReachedType":"rate_limit_reached"}}"#
+expect(
+    StatusMapper.limitDisplays(from: try! JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: Data(depletedJSON.utf8)))[0].statusText
+        == "Rate Limit Reached · Included usage unavailable — using credits",
+    "included-usage note should join an existing status"
+)
+let noteOnlyJSON = #"{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"codex"}}"#
+expect(
+    StatusMapper.limitDisplays(from: try! JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: Data(noteOnlyJSON.utf8))).first?.statusText
+        == "Included usage unavailable — using credits",
+    "included-usage note should survive with no other bucket content"
+)
 
 // Adaptive Claude usage: the self-describing `limits[]` array drives the windows so newly
 // introduced limits (e.g. a per-model weekly "Fable" window) render with no code change.

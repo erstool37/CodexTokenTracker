@@ -64,9 +64,13 @@ public enum StatusMapper {
             }
             return limitDisplay(key: key, snapshot: snapshot, now: now)
         }
-        if response.ordinaryUsageAllowed == false, let index = buckets.firstIndex(where: { $0.id == "codex" }),
-           buckets[index].statusText == nil {
-            buckets[index].statusText = "Included usage unavailable — using credits"
+        if response.ordinaryUsageAllowed == false {
+            let note = "Included usage unavailable — using credits"
+            if let index = buckets.firstIndex(where: { $0.id == "codex" }) {
+                buckets[index].statusText = [buckets[index].statusText, note].compactMap { $0 }.joined(separator: " · ")
+            } else {
+                buckets.insert(LimitBucketDisplay(id: "codex", label: "Codex", windows: [], creditsText: nil, statusText: note), at: 0)
+            }
         }
         return buckets
     }
@@ -98,13 +102,14 @@ public enum StatusMapper {
             windows.append(window)
         }
         let credits = StatusFormatter.creditsText(snapshot.credits)
-        guard !windows.isEmpty || credits != nil else {
+        let reachedText = StatusFormatter.displayStatusReason(snapshot.rateLimitReachedType)
+            ?? (snapshot.spendControlReached == true ? "Credit limit reached" : nil)
+        // A reached state alone still earns a bucket, so it is never hidden behind "no data".
+        guard !windows.isEmpty || credits != nil || reachedText != nil else {
             return nil
         }
 
         let rawLabel = snapshot.limitName ?? snapshot.limitId ?? key
-        let reachedText = StatusFormatter.displayStatusReason(snapshot.rateLimitReachedType)
-            ?? (snapshot.spendControlReached == true ? "Credit limit reached" : nil)
         return LimitBucketDisplay(
             id: key,
             label: bucketLabel(rawLabel),
