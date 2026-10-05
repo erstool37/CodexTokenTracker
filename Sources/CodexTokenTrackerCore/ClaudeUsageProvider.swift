@@ -43,9 +43,10 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     // on every popover open, and on a timer, so without a guard those calls stack up, trip the
     // limit, and then every subsequent call 429s — surfacing as a persistent "Anthropic API
     // error" in the pane. These three fields turn the provider into the single choke point:
-    //  • `cachedSnapshot` — last good result, served (marked stale by its old `refreshedAt`)
-    //    instead of erroring while we're throttled or rate-limited.
+    //  • `cachedSnapshot` — last good result, served while throttled.
     //  • `rateLimitedUntil` — hard network cutoff after a 429; honors the server's Retry-After.
+    //    Calls during the cooldown throw `.rateLimited` without touching the network, so the
+    //    store keeps its previous snapshot and the pane says when it will retry.
     //  • `lastSuccessfulFetch` — collapses bursts of refreshes into one network call.
     private let stateLock = NSLock()
     private var cachedSnapshot: CodexStatusSnapshot?
@@ -57,7 +58,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// `lastSuccessfulFetch` before either updates it, doubling up calls against the rate limit.
     private var inFlightTask: Task<CodexStatusSnapshot, Error>?
     /// Minimum spacing between real network fetches; rapid popover opens reuse the cache.
-    private let minFetchInterval: TimeInterval = 120
+    /// Matches the stale threshold so a refresh of stale data always reaches the network.
+    private let minFetchInterval: TimeInterval = StatusFormatter.staleInterval
     /// Cap on how long we'll honor a server Retry-After before probing again.
     private let maxRateLimitCooldown: TimeInterval = 3600
     /// Fallback cooldown when a 429 arrives without a usable Retry-After header.
@@ -83,7 +85,6 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         // so it would start a fresh duplicate request and re-trigger the rate limit.
         let decision: FetchDecision = stateLock.withLock {
             if let until = rateLimitedUntil, now < until {
-                if let cached = cachedSnapshot { return .cached(cached) }
                 return .rateLimited(until)
             }
             if let last = lastSuccessfulFetch,
@@ -146,13 +147,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
             if http.statusCode == 429 {
                 let cooldown = min(Self.retryAfterSeconds(from: http) ?? defaultRateLimitCooldown, maxRateLimitCooldown)
                 let until = responseReceivedAt.addingTimeInterval(cooldown)
-                let cached = stateLock.withLock { () -> CodexStatusSnapshot? in
-                    rateLimitedUntil = until
-                    return cachedSnapshot
-                }
+                stateLock.withLock { rateLimitedUntil = until }
                 Self.log.debug("claude usage rate-limited; backing off until \(until, privacy: .public)")
-                // Keep showing the last good data (stale) rather than an error whenever we can.
-                if let cached { return withFreshLocalStats(cached) }
                 throw ClaudeUsageError.rateLimited(until: until)
             }
             throw ClaudeUsageError.http(status: http.statusCode, body: body)
