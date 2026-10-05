@@ -141,13 +141,23 @@ public enum StatusFormatter {
         else {
             return nil
         }
-        if let intValue = Int(balance), intValue > 0 {
+        // Zero is shown: on credit-based plans a depleted balance is the state that matters.
+        if let intValue = Int(balance), intValue >= 0 {
             return "\(intValue) credits"
         }
-        if let value = Double(balance), value > 0 {
+        if let value = Double(balance), value >= 0 {
             return "\(Int(value.rounded())) credits"
         }
         return nil
+    }
+
+    /// A backend decimal-string credit amount, rounded to a whole number when it parses.
+    static func creditAmount(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed) else {
+            return trimmed
+        }
+        return "\(Int(value.rounded()))"
     }
 }
 

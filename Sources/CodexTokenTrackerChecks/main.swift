@@ -206,6 +206,55 @@ expect(LimitWarningLevel(percentLeft: 0) == .critical, "depleted limits should b
 expect(buckets[0].windows[0].warningLevel == .normal, "5h window should expose its warning level")
 expect(buckets[0].windows[1].warningLevel == .normal, "weekly window should expose its warning level")
 
+// codex-cli 0.160.0 shape (live edu account, 2026-10-05): integer percents, null balance, new fields.
+let liveCodexJSON = """
+{
+  "ordinaryUsageAllowed": true,
+  "rateLimits": {
+    "limitId": "codex", "limitName": null, "normalModelSlug": null,
+    "primary": { "usedPercent": 41, "windowDurationMins": 300, "resetsAt": 1791175200 },
+    "secondary": { "usedPercent": 70, "windowDurationMins": 10080, "resetsAt": 1791599790 },
+    "credits": { "hasCredits": true, "unlimited": false, "balance": null },
+    "individualLimit": null, "spendControlReached": false, "planType": "edu", "rateLimitReachedType": null
+  },
+  "rateLimitResetCredits": { "availableCount": 0, "credits": [] },
+  "rateLimitUpsell": null
+}
+""".data(using: .utf8)!
+let liveBuckets = StatusMapper.limitDisplays(
+    from: try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: liveCodexJSON),
+    now: Date(timeIntervalSince1970: 1_791_170_000)
+)
+expect(liveBuckets.map(\.label) == ["Codex"], "live 0.160 payload should decode to one Codex bucket")
+expect(liveBuckets[0].windows.map(\.percentLeft) == [59, 30], "live integer percents should map")
+expect(liveBuckets[0].statusText == nil, "live payload has no reached state")
+
+// Credit-based (usage-based) plan: no time windows, a spend cap, depleted balance.
+let creditPlanJSON = """
+{
+  "ordinaryUsageAllowed": false,
+  "rateLimits": {
+    "limitId": "codex",
+    "primary": null, "secondary": null,
+    "credits": { "hasCredits": true, "unlimited": false, "balance": "0" },
+    "individualLimit": { "used": "47.5", "limit": "50", "remainingPercent": 5, "resetsAt": 1791599790 },
+    "spendControlReached": true, "planType": "self_serve_business_usage_based", "rateLimitReachedType": null
+  }
+}
+""".data(using: .utf8)!
+let creditBuckets = StatusMapper.limitDisplays(
+    from: try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: creditPlanJSON),
+    now: Date(timeIntervalSince1970: 1_791_170_000)
+)
+expect(creditBuckets.count == 1, "credit-only bucket should not be dropped")
+expect(creditBuckets[0].windows.map(\.label) == ["Credit limit 48/50"], "spend cap should render as a credit bar, got \(creditBuckets[0].windows.map(\.label))")
+expect(creditBuckets[0].windows[0].percentLeft == 5, "spend cap percent left should come from remainingPercent")
+expect(creditBuckets[0].windows[0].resetsAtText != nil, "spend cap should show its reset")
+expect(creditBuckets[0].creditsText == "0 credits", "depleted balance should show 0 credits")
+expect(creditBuckets[0].statusText == "Credit limit reached", "spendControlReached should surface")
+let creditUsageOnly = try JSONDecoder().decode(GetAccountRateLimitsResponse.self, from: Data(String(decoding: creditPlanJSON, as: UTF8.self).replacingOccurrences(of: "true, \"planType\"", with: "false, \"planType\"").utf8))
+expect(StatusMapper.limitDisplays(from: creditUsageOnly)[0].statusText == "Included usage unavailable — using credits", "ordinaryUsageAllowed false should surface")
+
 // Adaptive Claude usage: the self-describing `limits[]` array drives the windows so newly
 // introduced limits (e.g. a per-model weekly "Fable" window) render with no code change.
 let claudeNow = Date(timeIntervalSince1970: 1_770_000_000)

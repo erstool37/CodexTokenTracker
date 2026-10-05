@@ -64,6 +64,8 @@ public enum AccountDTO: Decodable {
 public struct GetAccountRateLimitsResponse: Decodable {
     public let rateLimits: RateLimitSnapshotDTO
     public let rateLimitsByLimitId: [String: RateLimitSnapshotDTO]?
+    /// False when included plan usage is unavailable and turns draw on credits; nil is unknown.
+    public let ordinaryUsageAllowed: Bool?
 }
 
 public struct GetAccountTokenUsageResponse: Decodable {
@@ -90,8 +92,20 @@ public struct RateLimitSnapshotDTO: Decodable {
     public let primary: RateLimitWindowDTO?
     public let secondary: RateLimitWindowDTO?
     public let credits: CreditsSnapshotDTO?
+    /// Per-member credit spend cap on usage-based (credit) plans.
+    public let individualLimit: SpendControlLimitDTO?
+    public let spendControlReached: Bool?
     public let planType: String?
     public let rateLimitReachedType: String?
+}
+
+/// Fields are optional here (the schema requires them) so a shape change hides one bar
+/// instead of failing the whole rate-limits decode.
+public struct SpendControlLimitDTO: Decodable {
+    public let used: String?
+    public let limit: String?
+    public let remainingPercent: Double?
+    public let resetsAt: TimeInterval?
 }
 
 public struct RateLimitWindowDTO: Decodable {

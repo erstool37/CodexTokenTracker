@@ -58,12 +58,17 @@ public enum StatusMapper {
             }
         }
 
-        return snapshots.compactMap { key, snapshot in
+        var buckets: [LimitBucketDisplay] = snapshots.compactMap { key, snapshot in
             if shouldHideBucket(key: key, snapshot: snapshot) {
                 return nil
             }
             return limitDisplay(key: key, snapshot: snapshot, now: now)
         }
+        if response.ordinaryUsageAllowed == false, let index = buckets.firstIndex(where: { $0.id == "codex" }),
+           buckets[index].statusText == nil {
+            buckets[index].statusText = "Included usage unavailable — using credits"
+        }
+        return buckets
     }
 
     private static func shouldHideBucket(key: String, snapshot: RateLimitSnapshotDTO) -> Bool {
@@ -89,18 +94,43 @@ public enum StatusMapper {
         if let secondary = snapshot.secondary {
             windows.append(windowDisplay(id: "\(key)-secondary", window: secondary, fallback: "Weekly limit", now: now))
         }
+        if let spend = snapshot.individualLimit, let window = spendWindowDisplay(id: "\(key)-spend", limit: spend, now: now) {
+            windows.append(window)
+        }
         let credits = StatusFormatter.creditsText(snapshot.credits)
         guard !windows.isEmpty || credits != nil else {
             return nil
         }
 
         let rawLabel = snapshot.limitName ?? snapshot.limitId ?? key
+        let reachedText = StatusFormatter.displayStatusReason(snapshot.rateLimitReachedType)
+            ?? (snapshot.spendControlReached == true ? "Credit limit reached" : nil)
         return LimitBucketDisplay(
             id: key,
             label: bucketLabel(rawLabel),
             windows: windows,
             creditsText: credits,
-            statusText: StatusFormatter.displayStatusReason(snapshot.rateLimitReachedType)
+            statusText: reachedText
+        )
+    }
+
+    /// The credit spend cap as a usage bar; the label carries the used/limit amounts.
+    private static func spendWindowDisplay(id: String, limit: SpendControlLimitDTO, now: Date) -> LimitWindowDisplay? {
+        guard let remaining = limit.remainingPercent else {
+            return nil
+        }
+        let used = (100 - remaining).clamped(to: 0...100)
+        var label = "Credit limit"
+        if let spent = limit.used, let cap = limit.limit {
+            label += " \(StatusFormatter.creditAmount(spent))/\(StatusFormatter.creditAmount(cap))"
+        }
+        return LimitWindowDisplay(
+            id: id,
+            label: label,
+            percentUsed: used,
+            percentLeft: StatusFormatter.percentLeft(from: used),
+            resetsAtText: StatusFormatter.resetText(secondsSince1970: limit.resetsAt, now: now),
+            showsNumericUsage: true
         )
     }
 
