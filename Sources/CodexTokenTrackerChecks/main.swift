@@ -750,4 +750,59 @@ if case let .loaded(snapshot) = await MainActor.run(body: { retryingOnlineUsageS
 let retryingOnlineUsageCalls = await retryingOnlineUsageProvider.callCount()
 expect(retryingOnlineUsageCalls == 2, "online usage error should retry once")
 
+// Claude transcripts: incremental scanning must match a full parse.
+func claudeAssistantLine(requestId: String, timestamp: String, output: Int) -> String {
+    #"{"type":"assistant","timestamp":"\#(timestamp)","requestId":"\#(requestId)","message":{"id":"m-\#(requestId)","usage":{"input_tokens":1,"output_tokens":\#(output),"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+}
+
+let claudeProjects = FileManager.default.temporaryDirectory
+    .appendingPathComponent("ctt-claude-checks-\(UUID().uuidString)/projects", isDirectory: true)
+try FileManager.default.createDirectory(at: claudeProjects.appendingPathComponent("p"), withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: claudeProjects.deletingLastPathComponent()) }
+let transcriptNow = Date()
+let claudeStamp = ISO8601DateFormatter().string(from: transcriptNow.addingTimeInterval(-60))
+let claudeFileA = claudeProjects.appendingPathComponent("p/a.jsonl")
+let claudeFileB = claudeProjects.appendingPathComponent("p/b.jsonl")
+let claudeCache = ClaudeTranscriptCache()
+
+func claudeTotal() -> Int {
+    ClaudeTokenUsageProvider.load(now: transcriptNow, projectsDir: claudeProjects, cache: claudeCache)?
+        .today.usage.totalTokens ?? 0
+}
+
+func appendText(_ text: String, to url: URL) throws {
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(text.utf8))
+    try handle.close()
+}
+
+try (claudeAssistantLine(requestId: "r1", timestamp: claudeStamp, output: 10) + "\n"
+    + #"{"type":"user","timestamp":"\#(claudeStamp)","message":{"content":"assistant usage"}}"# + "\n")
+    .write(to: claudeFileA, atomically: false, encoding: .utf8)
+expect(claudeTotal() == 11, "claude scan should count one assistant record and skip user lines")
+
+// Append a complete line plus a partial line still being written.
+let claudeLine2 = claudeAssistantLine(requestId: "r2", timestamp: claudeStamp, output: 20)
+try appendText(claudeLine2 + "\n" + String(claudeLine2.prefix(30)), to: claudeFileA)
+expect(claudeTotal() == 32, "claude incremental scan should add appended lines and hold back a partial line")
+try appendText(String(claudeLine2.dropFirst(30)).replacingOccurrences(of: "r2", with: "r3") + "\n", to: claudeFileA)
+let claudeAfterPartial = claudeTotal()
+expect(claudeAfterPartial == 53, "claude completed partial line should parse once without double counting")
+
+// Duplicate requestId in another file is deduped.
+try (claudeAssistantLine(requestId: "r1", timestamp: claudeStamp, output: 10) + "\n")
+    .write(to: claudeFileB, atomically: false, encoding: .utf8)
+expect(claudeTotal() == claudeAfterPartial, "claude duplicate requestId across files should be deduped")
+
+// A rewritten (shorter) file is re-parsed from scratch.
+try (claudeAssistantLine(requestId: "r9", timestamp: claudeStamp, output: 4) + "\n")
+    .write(to: claudeFileA, atomically: true, encoding: .utf8)
+expect(claudeTotal() == 16, "claude replaced file should be re-parsed, keeping file b's r1")
+expect(
+    claudeTotal() == ClaudeTokenUsageProvider.load(now: transcriptNow, projectsDir: claudeProjects, cache: ClaudeTranscriptCache())?
+        .today.usage.totalTokens,
+    "claude cached scan should equal a cold scan"
+)
+
 print("CodexTokenTracker checks passed")
