@@ -4,6 +4,7 @@ import os
 public enum ClaudeUsageError: Error, LocalizedError, Sendable {
     case http(status: Int, body: String)
     case emptyShape(body: String)
+    case rateLimited(until: Date)
 
     public var errorDescription: String? {
         switch self {
@@ -11,9 +12,17 @@ public enum ClaudeUsageError: Error, LocalizedError, Sendable {
             if status == 401 || status == 403 {
                 return "Claude session expired — open Claude Code to refresh."
             }
+            if status == 429 {
+                return "Claude usage rate-limited — retrying later."
+            }
             return "Anthropic API error (HTTP \(status))"
         case .emptyShape:
             return "Unrecognized usage response"
+        case let .rateLimited(until):
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+            return "Claude usage rate-limited — retrying after \(formatter.string(from: until))."
         }
     }
 }
@@ -29,11 +38,85 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     private let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private let session: URLSession
 
+    // The `/api/oauth/usage` endpoint enforces a strict per-account rate limit and answers a
+    // 429 with a large `Retry-After` (often ~an hour). The store calls `refresh()` on launch,
+    // on every popover open, and on a timer, so without a guard those calls stack up, trip the
+    // limit, and then every subsequent call 429s — surfacing as a persistent "Anthropic API
+    // error" in the pane. These three fields turn the provider into the single choke point:
+    //  • `cachedSnapshot` — last good result, served (marked stale by its old `refreshedAt`)
+    //    instead of erroring while we're throttled or rate-limited.
+    //  • `rateLimitedUntil` — hard network cutoff after a 429; honors the server's Retry-After.
+    //  • `lastSuccessfulFetch` — collapses bursts of refreshes into one network call.
+    private let stateLock = NSLock()
+    private var cachedSnapshot: CodexStatusSnapshot?
+    private var rateLimitedUntil: Date?
+    private var lastSuccessfulFetch: Date?
+    /// The network fetch presently in flight, if any. Concurrent callers that pass the fast-path
+    /// checks below (e.g. a launch refresh and a popover-open refresh landing back to back) join
+    /// this task instead of each starting their own request — otherwise both could read a stale
+    /// `lastSuccessfulFetch` before either updates it, doubling up calls against the rate limit.
+    private var inFlightTask: Task<CodexStatusSnapshot, Error>?
+    /// Minimum spacing between real network fetches; rapid popover opens reuse the cache.
+    private let minFetchInterval: TimeInterval = 120
+    /// Cap on how long we'll honor a server Retry-After before probing again.
+    private let maxRateLimitCooldown: TimeInterval = 3600
+    /// Fallback cooldown when a 429 arrives without a usable Retry-After header.
+    private let defaultRateLimitCooldown: TimeInterval = 300
+
     public init(session: URLSession = .shared) {
         self.session = session
     }
 
+    private enum FetchDecision {
+        case cached(CodexStatusSnapshot)
+        case rateLimited(Date)
+        case join(Task<CodexStatusSnapshot, Error>)
+    }
+
     public func fetchStatus() async throws -> CodexStatusSnapshot {
+        let now = Date()
+
+        // The rate-limit check, the cache-freshness check, and the in-flight-task lookup must
+        // all happen under one lock acquisition. Splitting them (as an earlier version of this
+        // fix did) left a gap: a caller could read a stale gate, then by the time it reached the
+        // in-flight check the prior fetch had already finished and cleared `inFlightTask`,
+        // so it would start a fresh duplicate request and re-trigger the rate limit.
+        let decision: FetchDecision = stateLock.withLock {
+            if let until = rateLimitedUntil, now < until {
+                if let cached = cachedSnapshot { return .cached(cached) }
+                return .rateLimited(until)
+            }
+            if let last = lastSuccessfulFetch,
+               now.timeIntervalSince(last) < minFetchInterval,
+               let cached = cachedSnapshot {
+                return .cached(cached)
+            }
+            if let inFlightTask {
+                return .join(inFlightTask)
+            }
+            let newTask = Task { try await self.performNetworkFetch() }
+            inFlightTask = newTask
+            return .join(newTask)
+        }
+
+        switch decision {
+        case let .cached(snapshot):
+            return withFreshLocalStats(snapshot)
+        case let .rateLimited(until):
+            throw ClaudeUsageError.rateLimited(until: until)
+        case let .join(task):
+            return try await task.value
+        }
+    }
+
+    /// Performs the actual `/api/oauth/usage` request and updates the shared cache/rate-limit
+    /// state. Only ever reached through the coalescing `Task` in `fetchStatus()`, so at most one
+    /// of these runs at a time per provider instance.
+    private func performNetworkFetch() async throws -> CodexStatusSnapshot {
+        defer {
+            stateLock.withLock { inFlightTask = nil }
+        }
+
         let token = try ClaudeKeychain.readAccessToken()
 
         var request = URLRequest(url: endpoint)
@@ -47,6 +130,12 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         request.timeoutInterval = 15
 
         let (data, response) = try await session.data(for: request)
+        // Anchor the Retry-After cooldown to when the response actually arrived, not when the
+        // request was created — the keychain read and the network round trip (up to the 15s
+        // timeout) can both take real time, and a numeric `Retry-After` is a duration counted
+        // from the server's now, so anchoring it earlier would let us retry before the server
+        // permits.
+        let responseReceivedAt = Date()
         let body = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
         // Log the raw payload at debug level (stream-only) for future troubleshooting; visible via
         // `log stream --predicate 'subsystem == "com.erstool37.CodexTokenTracker"' --level debug`
@@ -54,21 +143,66 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         Self.log.debug("claude usage raw: \(body, privacy: .public)")
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 429 {
+                let cooldown = min(Self.retryAfterSeconds(from: http) ?? defaultRateLimitCooldown, maxRateLimitCooldown)
+                let until = responseReceivedAt.addingTimeInterval(cooldown)
+                let cached = stateLock.withLock { () -> CodexStatusSnapshot? in
+                    rateLimitedUntil = until
+                    return cachedSnapshot
+                }
+                Self.log.debug("claude usage rate-limited; backing off until \(until, privacy: .public)")
+                // Keep showing the last good data (stale) rather than an error whenever we can.
+                if let cached { return withFreshLocalStats(cached) }
+                throw ClaudeUsageError.rateLimited(until: until)
+            }
             throw ClaudeUsageError.http(status: http.statusCode, body: body)
         }
 
         let decoded = try JSONDecoder().decode(ClaudeUsageDTO.self, from: data)
-        let now = Date()
-        var snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: now)
+        let fetchedAt = Date()
+        var snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: fetchedAt)
 
         // Aggregate local Claude Code transcripts and surface as the usage card.
-        let claudeLocalStats = ClaudeTokenUsageProvider.load(now: now)
-        snapshot.onlineTokenStats = claudeLocalStats
+        snapshot.onlineTokenStats = ClaudeTokenUsageProvider.load(now: fetchedAt)
 
         if snapshot.limits.isEmpty {
             throw ClaudeUsageError.emptyShape(body: body)
         }
+
+        stateLock.withLock {
+            cachedSnapshot = snapshot
+            lastSuccessfulFetch = fetchedAt
+            rateLimitedUntil = nil
+        }
         return snapshot
+    }
+
+    /// Return a cached snapshot with only its local transcript stats refreshed. The API-derived
+    /// `refreshedAt` is intentionally left untouched so the popover renders it as stale data.
+    private func withFreshLocalStats(_ snapshot: CodexStatusSnapshot) -> CodexStatusSnapshot {
+        var copy = snapshot
+        copy.onlineTokenStats = ClaudeTokenUsageProvider.load(now: Date())
+        return copy
+    }
+
+    /// Parse a `Retry-After` header, which may be an integer number of seconds or an HTTP date.
+    private static func retryAfterSeconds(from response: HTTPURLResponse) -> TimeInterval? {
+        guard let raw = (response.value(forHTTPHeaderField: "Retry-After")
+            ?? response.value(forHTTPHeaderField: "retry-after"))?
+            .trimmingCharacters(in: .whitespaces) else {
+            return nil
+        }
+        if let seconds = TimeInterval(raw) {
+            return max(0, seconds)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        if let date = formatter.date(from: raw) {
+            return max(0, date.timeIntervalSinceNow)
+        }
+        return nil
     }
 }
 
