@@ -805,4 +805,26 @@ expect(
     "claude cached scan should equal a cold scan"
 )
 
+// In-place rewrite (same inode, not shorter) is detected by the head fingerprint.
+let claudeInPlace = try FileHandle(forWritingTo: claudeFileA)
+try claudeInPlace.truncate(atOffset: 0)
+try claudeInPlace.write(contentsOf: Data((claudeAssistantLine(requestId: "x1", timestamp: claudeStamp, output: 999) + "\n"
+    + claudeAssistantLine(requestId: "x2", timestamp: claudeStamp, output: 4999) + "\n").utf8))
+try claudeInPlace.close()
+try FileManager.default.setAttributes([.modificationDate: transcriptNow.addingTimeInterval(-5)], ofItemAtPath: claudeFileA.path)
+expect(claudeTotal() == 11 + 1000 + 5000, "claude in-place rewrite should be re-parsed")
+
+// A complete final line without a trailing newline is counted once.
+try appendText(claudeAssistantLine(requestId: "t1", timestamp: claudeStamp, output: 99), to: claudeFileA)
+expect(claudeTotal() == 6111, "claude complete final line without newline should count")
+expect(claudeTotal() == 6111, "claude final line without newline should not double count")
+
+// Cross-file duplicates keep the earliest timestamp regardless of path order.
+let claudeOldStamp = ISO8601DateFormatter().string(from: transcriptNow.addingTimeInterval(-3 * 24 * 60 * 60))
+try (claudeAssistantLine(requestId: "d1", timestamp: claudeOldStamp, output: 7) + "\n")
+    .write(to: claudeProjects.appendingPathComponent("p/z.jsonl"), atomically: false, encoding: .utf8)
+try (claudeAssistantLine(requestId: "d1", timestamp: claudeStamp, output: 7) + "\n")
+    .write(to: claudeProjects.appendingPathComponent("p/0.jsonl"), atomically: false, encoding: .utf8)
+expect(claudeTotal() == 6111, "claude duplicate requestId should keep the earliest (3-day-old) copy, not today's")
+
 print("CodexTokenTracker checks passed")

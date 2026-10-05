@@ -64,8 +64,9 @@ public enum ClaudeTokenUsageProvider {
 // MARK: - Incremental per-file cache
 
 /// Process-wide cache of parsed transcript records, keyed by file path. Transcripts are
-/// append-only JSONL, so each file is re-read only from the last consumed newline; a file
-/// whose inode changed or that shrank is re-parsed from the start.
+/// append-only JSONL, so each file is re-read only from the last consumed byte. A file is
+/// re-parsed from the start when its inode changed, it shrank, or its mtime changed and its
+/// leading bytes no longer match (an in-place rewrite).
 public final class ClaudeTranscriptCache: @unchecked Sendable {
     public static let shared = ClaudeTranscriptCache()
 
@@ -73,9 +74,13 @@ public final class ClaudeTranscriptCache: @unchecked Sendable {
 
     private struct FileState {
         var fileNumber: Int?
-        var offset: UInt64
-        var records: [ClaudeTranscriptRecord]
+        var modifiedAt: Date?
+        var head = Data()
+        var offset: UInt64 = 0
+        var records: [ClaudeTranscriptRecord] = []
     }
+
+    private static let headLength = 4096
 
     // Held for the whole scan so concurrent refreshes wait for, then reuse, one pass.
     private let lock = NSLock()
@@ -112,34 +117,56 @@ public final class ClaudeTranscriptCache: @unchecked Sendable {
                 let size = UInt64(values.fileSize ?? 0)
                 let fileNumber = (try? FileManager.default.attributesOfItem(atPath: path))?[.systemFileNumber] as? Int
 
-                var state = files[path] ?? FileState(fileNumber: fileNumber, offset: 0, records: [])
-                if state.fileNumber != fileNumber || size < state.offset {
-                    state = FileState(fileNumber: fileNumber, offset: 0, records: [])
+                var state = files[path] ?? FileState(fileNumber: fileNumber)
+                let rewritten = state.fileNumber != fileNumber
+                    || size < state.offset
+                    || (state.modifiedAt != modifiedAt && Self.readHead(fileURL, length: state.head.count) != state.head)
+                if rewritten {
+                    state = FileState(fileNumber: fileNumber)
                 }
                 if size > state.offset {
                     Self.consume(fileURL, into: &state)
                 }
+                state.modifiedAt = modifiedAt
                 files[path] = state
             }
             files = files.filter { live.contains($0.key) }
 
-            // Dedupe across files at aggregation time, in a stable path order, first occurrence wins.
-            var seen = Set<String>()
+            // Dedupe across files: a requestId replayed into a resumed or forked transcript keeps
+            // its earliest timestamp, i.e. the original response.
             var result: [ClaudeTranscriptRecord] = []
-            for path in files.keys.sorted() {
-                for record in files[path]!.records {
-                    if let key = record.dedupeKey, !seen.insert(key).inserted {
+            var indexByKey: [String: Int] = [:]
+            for state in files.values {
+                for record in state.records {
+                    guard let key = record.dedupeKey else {
+                        result.append(record)
                         continue
                     }
-                    result.append(record)
+                    if let index = indexByKey[key] {
+                        if record.timestamp < result[index].timestamp {
+                            result[index] = record
+                        }
+                    } else {
+                        indexByKey[key] = result.count
+                        result.append(record)
+                    }
                 }
             }
             return result
         }
     }
 
-    /// Reads complete lines from `state.offset` onward and advances the offset past the last
-    /// newline. A trailing partial line (a write in progress) is left for the next scan.
+    private static func readHead(_ fileURL: URL, length: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: length)) ?? Data()
+    }
+
+    /// Reads lines from `state.offset` onward and advances the offset past what was consumed.
+    /// A trailing line without a newline is consumed only if it is already complete JSON;
+    /// otherwise it is a write in progress and is left for the next scan.
     private static func consume(_ fileURL: URL, into state: inout FileState) {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
             return
@@ -153,21 +180,31 @@ public final class ClaudeTranscriptCache: @unchecked Sendable {
         var pending = Data()
         var consumed: UInt64 = 0
 
+        func take(_ line: Data) {
+            if let record = parseLine(line), record.dedupeKey.map({ seenInFile.insert($0).inserted }) ?? true {
+                state.records.append(record)
+            }
+        }
+
         while true {
             guard let chunk = try? handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else {
                 break
             }
+            if state.offset == 0, state.head.count < headLength {
+                state.head.append(chunk.prefix(headLength - state.head.count))
+            }
             pending.append(chunk)
             var lineStart = pending.startIndex
             while let newline = pending[lineStart...].firstIndex(of: 0x0A) {
-                let line = pending[lineStart..<newline]
-                if let record = parseLine(line), record.dedupeKey.map({ seenInFile.insert($0).inserted }) ?? true {
-                    state.records.append(record)
-                }
+                take(pending[lineStart..<newline])
                 consumed += UInt64(newline - lineStart + 1)
                 lineStart = pending.index(after: newline)
             }
             pending = Data(pending[lineStart...])
+        }
+        if !pending.isEmpty, (try? JSONSerialization.jsonObject(with: pending)) != nil {
+            take(pending)
+            consumed += UInt64(pending.count)
         }
         state.offset += consumed
     }
