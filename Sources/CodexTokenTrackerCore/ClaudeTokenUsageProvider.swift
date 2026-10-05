@@ -186,21 +186,27 @@ public final class ClaudeTranscriptCache: @unchecked Sendable {
             }
         }
 
-        while true {
-            guard let chunk = try? handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else {
-                break
+        // Drain per chunk: this runs on a cooperative-pool thread with no run-loop pool, so the
+        // bridged NSData from FileHandle reads otherwise accumulates across a multi-GB cold scan.
+        var reachedEnd = false
+        while !reachedEnd {
+            autoreleasepool {
+                guard let chunk = try? handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else {
+                    reachedEnd = true
+                    return
+                }
+                if state.offset == 0, state.head.count < headLength {
+                    state.head.append(chunk.prefix(headLength - state.head.count))
+                }
+                pending.append(chunk)
+                var lineStart = pending.startIndex
+                while let newline = pending[lineStart...].firstIndex(of: 0x0A) {
+                    take(pending[lineStart..<newline])
+                    consumed += UInt64(newline - lineStart + 1)
+                    lineStart = pending.index(after: newline)
+                }
+                pending = Data(pending[lineStart...])
             }
-            if state.offset == 0, state.head.count < headLength {
-                state.head.append(chunk.prefix(headLength - state.head.count))
-            }
-            pending.append(chunk)
-            var lineStart = pending.startIndex
-            while let newline = pending[lineStart...].firstIndex(of: 0x0A) {
-                take(pending[lineStart..<newline])
-                consumed += UInt64(newline - lineStart + 1)
-                lineStart = pending.index(after: newline)
-            }
-            pending = Data(pending[lineStart...])
         }
         if !pending.isEmpty, (try? JSONSerialization.jsonObject(with: pending)) != nil {
             take(pending)
