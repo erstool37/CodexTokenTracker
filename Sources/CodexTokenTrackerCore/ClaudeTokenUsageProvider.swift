@@ -7,17 +7,18 @@ import Foundation
 /// responses replayed across resumed or forked transcripts are not double-counted.
 public enum ClaudeTokenUsageProvider {
     /// Entry point. Returns nil when no transcripts or usage are found.
-    public static func load(now: Date = Date()) -> TokenUsageStats? {
-        let claudeHome = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude", isDirectory: true)
-        let projectsDir = claudeHome.appendingPathComponent("projects", isDirectory: true)
+    /// `projectsDirectory` overrides `~/.claude/projects` (used by checks).
+    public static func load(now: Date = Date(), projectsDirectory: URL? = nil) -> TokenUsageStats? {
+        let projectsDir = projectsDirectory
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/projects", isDirectory: true)
 
         guard FileManager.default.fileExists(atPath: projectsDir.path) else {
             return nil
         }
 
         let cutoff28 = now.addingTimeInterval(-28 * 24 * 60 * 60)
-        let records = transcriptRecords(under: projectsDir, modifiedSince: cutoff28, now: now)
+        let records = transcriptRecords(under: projectsDir, modifiedSince: cutoff28)
         guard !records.isEmpty else {
             return nil
         }
@@ -58,25 +59,28 @@ public enum ClaudeTokenUsageProvider {
 
     private static func transcriptRecords(
         under root: URL,
-        modifiedSince cutoff: Date,
-        now: Date
+        modifiedSince cutoff: Date
     ) -> [ClaudeTranscriptRecord] {
         guard let enumerator = FileManager.default.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
             options: []
         ) else {
             return []
         }
 
-        var seen = Set<String>()
+        // Dedupe stays global across files and follows enumeration order, as before;
+        // only the per-file parse is cached.
+        var seen = Set<UInt64>()
         var records: [ClaudeTranscriptRecord] = []
+        var seenPaths = Set<String>()
 
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
             guard
                 let values = try? fileURL.resourceValues(forKeys: [
                     .isRegularFileKey,
-                    .contentModificationDateKey
+                    .contentModificationDateKey,
+                    .fileSizeKey
                 ]),
                 values.isRegularFile != false,
                 let modifiedAt = values.contentModificationDate,
@@ -85,46 +89,104 @@ public enum ClaudeTokenUsageProvider {
                 continue
             }
 
-            let fileRecords = parseFile(fileURL, seen: &seen)
-            records.append(contentsOf: fileRecords)
+            let path = fileURL.path
+            let size = values.fileSize ?? -1
+            seenPaths.insert(path)
+
+            let entries: [ClaudeCachedEntry]
+            if let cached = cache.entries(for: path, modifiedAt: modifiedAt, size: size) {
+                entries = cached
+            } else {
+                entries = parseFile(fileURL)
+                cache.store(entries, for: path, modifiedAt: modifiedAt, size: size)
+            }
+
+            for entry in entries {
+                if entry.dedupeKey != 0 && !seen.insert(entry.dedupeKey).inserted { continue }
+                guard let timestamp = entry.timestamp else { continue }
+                records.append(ClaudeTranscriptRecord(timestamp: timestamp, usage: entry.usage))
+            }
         }
 
+        cache.retain(paths: seenPaths)
         return records
     }
 
     // MARK: - Per-file parsing
 
-    private static func parseFile(_ fileURL: URL, seen: inout Set<String>) -> [ClaudeTranscriptRecord] {
-        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
-            return []
-        }
-        defer { try? handle.close() }
+    /// Streams the file in fixed chunks through one reusable buffer and splits lines by index.
+    private static func parseFile(_ fileURL: URL) -> [ClaudeCachedEntry] {
+        let fd = open(fileURL.path, O_RDONLY)
+        guard fd >= 0 else { return [] }
+        defer { close(fd) }
 
-        var records: [ClaudeTranscriptRecord] = []
-        var pending = Data()
+        let decoder = JSONDecoder()
+        var entries: [ClaudeCachedEntry] = []
+        var buffer = [UInt8](repeating: 0, count: readChunkSize)
+        var start = 0  // first unconsumed byte
+        var end = 0    // end of valid bytes
 
         while true {
-            guard let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
-                break
+            // Grow only when a single line outgrows the buffer.
+            if end == buffer.count {
+                if start > 0 {
+                    buffer.withUnsafeMutableBytes { raw in
+                        memmove(raw.baseAddress!, raw.baseAddress! + start, end - start)
+                    }
+                    end -= start
+                    start = 0
+                } else {
+                    buffer.append(contentsOf: repeatElement(0, count: buffer.count))
+                }
             }
-            pending.append(chunk)
-            while let newlineRange = pending.firstRange(of: newlineData) {
-                let line = pending.subdata(in: pending.startIndex..<newlineRange.lowerBound)
-                pending.removeSubrange(pending.startIndex..<newlineRange.upperBound)
-                if let record = parseLine(line, seen: &seen) {
-                    records.append(record)
+            let readCount = buffer.withUnsafeMutableBytes { raw in
+                read(fd, raw.baseAddress! + end, raw.count - end)
+            }
+            if readCount < 0 && errno == EINTR { continue }
+            if readCount <= 0 { break }
+
+            let scanFrom = end
+            end += readCount
+            buffer.withUnsafeBytes { raw in
+                let base = raw.baseAddress!
+                var cursor = scanFrom
+                while cursor < end,
+                      let hit = memchr(base + cursor, 0x0A, end - cursor) {
+                    let newline = base.distance(to: UnsafeRawPointer(hit))
+                    if let entry = parseLine(base + start, count: newline - start, decoder: decoder) {
+                        entries.append(entry)
+                    }
+                    start = newline + 1
+                    cursor = start
+                }
+            }
+            if start == end {
+                start = 0
+                end = 0
+            }
+        }
+
+        if end > start {
+            buffer.withUnsafeBytes { raw in
+                if let entry = parseLine(raw.baseAddress! + start, count: end - start, decoder: decoder) {
+                    entries.append(entry)
                 }
             }
         }
-        if !pending.isEmpty, let record = parseLine(pending, seen: &seen) {
-            records.append(record)
-        }
-        return records
+        return entries
     }
 
-    private static func parseLine(_ data: Data, seen: inout Set<String>) -> ClaudeTranscriptRecord? {
-        guard !data.isEmpty else { return nil }
-        guard let raw = try? JSONDecoder().decode(ClaudeTranscriptLine.self, from: data) else {
+    private static func parseLine(
+        _ bytes: UnsafeRawPointer,
+        count: Int,
+        decoder: JSONDecoder
+    ) -> ClaudeCachedEntry? {
+        guard count > 0 else { return nil }
+        // Lines without a literal "usage" key cannot yield a record: the parser requires one.
+        guard memmem(bytes, count, usageKeyBytes, usageKeyBytes.count) != nil else { return nil }
+
+        let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes), count: count, deallocator: .none)
+        guard let raw = try? decoder.decode(ClaudeTranscriptLine.self, from: data) else {
             return nil
         }
         // Only process assistant events.
@@ -134,13 +196,8 @@ public enum ClaudeTokenUsageProvider {
         guard let usage = raw.message?.usage ?? raw.usage else { return nil }
 
         // Resolve unique ID for deduplication — prefer API-stable requestId/message.id over local uuid.
-        let dedupeKey = raw.requestId ?? raw.message?.id ?? raw.uuid
-        if let key = dedupeKey {
-            if seen.contains(key) { return nil }
-            seen.insert(key)
-        }
-
-        guard let timestamp = parseTimestamp(raw.timestamp) else { return nil }
+        // Keys are stored as 64-bit hashes; 0 marks "no key" (never deduplicated).
+        let dedupeKey = (raw.requestId ?? raw.message?.id ?? raw.uuid).map(hashKey) ?? 0
 
         let total = usage.input_tokens + usage.output_tokens
             + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
@@ -151,24 +208,43 @@ public enum ClaudeTokenUsageProvider {
             outputTokens: usage.output_tokens,
             reasoningOutputTokens: 0
         )
-        return ClaudeTranscriptRecord(timestamp: timestamp, usage: breakdown)
+        // A bad timestamp still consumes its dedupe key, so keep the entry with a nil timestamp.
+        return ClaudeCachedEntry(dedupeKey: dedupeKey, timestamp: parseTimestamp(raw.timestamp), usage: breakdown)
+    }
+
+    /// FNV-1a over UTF-8; remapped so a real key never collides with the 0 "no key" marker.
+    private static func hashKey(_ key: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in key.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
+        }
+        return hash == 0 ? 1 : hash
     }
 
     // MARK: - Timestamp parsing
 
-    private static func parseTimestamp(_ raw: String) -> Date? {
-        // Transcripts use 3-digit millis (e.g. "...07.417Z") — fractional formatter handles them.
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractionalFormatter.date(from: raw) { return date }
+    // ISO8601DateFormatter is thread-safe for parsing, so these are shared.
+    // Transcripts use 3-digit millis (e.g. "...07.417Z") — the fractional formatter handles them.
+    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let plainFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 
+    private static func parseTimestamp(_ raw: String) -> Date? {
+        if let date = fractionalFormatter.date(from: raw) { return date }
         // Fallback to plain internet date-time.
-        let plainFormatter = ISO8601DateFormatter()
-        plainFormatter.formatOptions = [.withInternetDateTime]
         return plainFormatter.date(from: raw)
     }
 
-    private static let newlineData = Data([0x0A])
+    private static let readChunkSize = 256 * 1024
+    private static let usageKeyBytes = Array("\"usage\"".utf8)
+    private static let cache = ClaudeTranscriptCache()
 }
 
 // MARK: - Internal record type
@@ -176,6 +252,52 @@ public enum ClaudeTokenUsageProvider {
 private struct ClaudeTranscriptRecord {
     var timestamp: Date
     var usage: TokenUsageBreakdownDisplay
+}
+
+// MARK: - Per-file cache
+
+/// One assistant line reduced to what the aggregation needs.
+private struct ClaudeCachedEntry {
+    var dedupeKey: UInt64
+    var timestamp: Date?
+    var usage: TokenUsageBreakdownDisplay
+}
+
+private struct ClaudeCachedFile {
+    var modifiedAt: Date
+    var size: Int
+    var entries: [ClaudeCachedEntry]
+}
+
+private final class ClaudeTranscriptCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var files: [String: ClaudeCachedFile] = [:]
+
+    func entries(for path: String, modifiedAt: Date, size: Int) -> [ClaudeCachedEntry]? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard
+            let file = files[path],
+            file.modifiedAt == modifiedAt,
+            file.size == size
+        else {
+            return nil
+        }
+        return file.entries
+    }
+
+    func store(_ entries: [ClaudeCachedEntry], for path: String, modifiedAt: Date, size: Int) {
+        lock.lock()
+        files[path] = ClaudeCachedFile(modifiedAt: modifiedAt, size: size, entries: entries)
+        lock.unlock()
+    }
+
+    func retain(paths: Set<String>) {
+        lock.lock()
+        files = files.filter { paths.contains($0.key) }
+        lock.unlock()
+    }
 }
 
 // MARK: - Minimal decodable DTOs

@@ -802,4 +802,50 @@ await waitForLoadedSnapshot(
 let hangCallsAfterRetry = await hangProvider.callCount()
 expect(hangCallsAfterRetry == 2, "timeout recovery should start exactly one replacement provider call")
 
+// Claude transcript scan: per-file cache, eviction, and cross-file dedupe.
+func claudeLine(requestId: String, timestamp: String, inputTokens: Int, outputTokens: Int) -> String {
+    """
+    {"type":"assistant","timestamp":"\(timestamp)","requestId":"\(requestId)","message":{"id":"msg-\(requestId)","usage":{"input_tokens":\(inputTokens),"output_tokens":\(outputTokens),"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+    """
+}
+
+let claudeCheckNow = Date()
+let claudeCheckStamp = ISO8601DateFormatter().string(from: claudeCheckNow.addingTimeInterval(-60))
+let claudeProjects = FileManager.default.temporaryDirectory
+    .appendingPathComponent("claude-projects-\(UUID().uuidString)", isDirectory: true)
+let claudeProjectA = claudeProjects.appendingPathComponent("a", isDirectory: true)
+let claudeProjectB = claudeProjects.appendingPathComponent("b", isDirectory: true)
+try FileManager.default.createDirectory(at: claudeProjectA, withIntermediateDirectories: true)
+try FileManager.default.createDirectory(at: claudeProjectB, withIntermediateDirectories: true)
+let claudeFileA = claudeProjectA.appendingPathComponent("one.jsonl")
+let claudeFileB = claudeProjectB.appendingPathComponent("two.jsonl")
+let claudeUserLine = #"{"type":"user","timestamp":"\#(claudeCheckStamp)","message":{"content":"hi"}}"#
+try ([
+    claudeLine(requestId: "r1", timestamp: claudeCheckStamp, inputTokens: 10, outputTokens: 5),
+    claudeUserLine,
+    claudeLine(requestId: "r2", timestamp: claudeCheckStamp, inputTokens: 20, outputTokens: 5)
+].joined(separator: "\n") + "\n").write(to: claudeFileA, atomically: true, encoding: .utf8)
+// r2 replays a request already counted in file one, so it must be counted once overall.
+try ([
+    claudeLine(requestId: "r2", timestamp: claudeCheckStamp, inputTokens: 20, outputTokens: 5),
+    claudeLine(requestId: "r3", timestamp: claudeCheckStamp, inputTokens: 1, outputTokens: 1)
+].joined(separator: "\n")).write(to: claudeFileB, atomically: true, encoding: .utf8)
+
+let claudeFirst = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeFirst?.monthly.sessionCount == 3, "a cross-file duplicate request should be counted once — got \(String(describing: claudeFirst?.monthly.sessionCount))")
+expect(claudeFirst?.monthly.usage.totalTokens == 15 + 25 + 2, "deduped Claude usage should sum r1, r2, r3 once")
+let claudeSecond = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeSecond == claudeFirst, "a cached second Claude load should equal the first")
+
+try appendLine(claudeLine(requestId: "r4", timestamp: claudeCheckStamp, inputTokens: 100, outputTokens: 0), to: claudeFileA)
+let claudeModified = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeModified?.monthly.usage.totalTokens == 15 + 25 + 2 + 100, "a modified Claude transcript should be re-parsed")
+
+try FileManager.default.removeItem(at: claudeFileB)
+let claudeRemoved = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeRemoved?.monthly.usage.totalTokens == 15 + 25 + 100, "a removed Claude transcript should be evicted from the totals")
+let claudeRemovedAgain = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeRemovedAgain == claudeRemoved, "a Claude load after eviction should stay stable")
+try? FileManager.default.removeItem(at: claudeProjects)
+
 print("CodexTokenTracker checks passed")

@@ -2,6 +2,9 @@ import Foundation
 
 public final class AccountTokenUsageLedgerStore: @unchecked Sendable {
     private static let lock = NSLock()
+    /// Decoded ledger per file, valid while the file's modification date and size are unchanged.
+    /// Guarded by `lock`.
+    nonisolated(unsafe) private static var cachedLedgers: [String: CachedLedger] = [:]
 
     private let url: URL
 
@@ -73,12 +76,24 @@ public final class AccountTokenUsageLedgerStore: @unchecked Sendable {
     }
 
     private func loadLedger() -> AccountTokenUsageLedger? {
+        let signature = fileSignature()
+        if let signature, let cached = Self.cachedLedgers[url.path], cached.signature == signature {
+            return cached.ledger
+        }
         guard let data = try? Data(contentsOf: url) else {
+            Self.cachedLedgers[url.path] = nil
             return nil
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(AccountTokenUsageLedger.self, from: data)
+        guard let ledger = try? decoder.decode(AccountTokenUsageLedger.self, from: data) else {
+            Self.cachedLedgers[url.path] = nil
+            return nil
+        }
+        if let signature {
+            Self.cachedLedgers[url.path] = CachedLedger(signature: signature, ledger: ledger)
+        }
+        return ledger
     }
 
     private func saveLedger(_ ledger: AccountTokenUsageLedger) {
@@ -87,13 +102,37 @@ public final class AccountTokenUsageLedgerStore: @unchecked Sendable {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(ledger)
             try data.write(to: url, options: .atomic)
+            if let signature = fileSignature() {
+                Self.cachedLedgers[url.path] = CachedLedger(signature: signature, ledger: ledger)
+            }
         } catch {
-            return
+            Self.cachedLedgers[url.path] = nil
         }
     }
+
+    private func fileSignature() -> LedgerFileSignature? {
+        guard
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+            let modifiedAt = values.contentModificationDate,
+            let size = values.fileSize
+        else {
+            return nil
+        }
+        return LedgerFileSignature(modifiedAt: modifiedAt, size: size)
+    }
+}
+
+private struct LedgerFileSignature: Equatable {
+    var modifiedAt: Date
+    var size: Int
+}
+
+private struct CachedLedger {
+    var signature: LedgerFileSignature
+    var ledger: AccountTokenUsageLedger
 }
 
 private struct AccountTokenUsageLedger: Codable {
