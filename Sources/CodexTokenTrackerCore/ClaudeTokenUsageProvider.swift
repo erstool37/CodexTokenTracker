@@ -96,9 +96,12 @@ public enum ClaudeTokenUsageProvider {
             let entries: [ClaudeCachedEntry]
             if let cached = cache.entries(for: path, modifiedAt: modifiedAt, size: size) {
                 entries = cached
-            } else {
-                entries = parseFile(fileURL)
+            } else if let parsed = parseFile(fileURL) {
+                entries = parsed
                 cache.store(entries, for: path, modifiedAt: modifiedAt, size: size)
+            } else {
+                // Unreadable this load: skip without caching so a later load retries.
+                continue
             }
 
             for entry in entries {
@@ -115,9 +118,10 @@ public enum ClaudeTokenUsageProvider {
     // MARK: - Per-file parsing
 
     /// Streams the file in fixed chunks through one reusable buffer and splits lines by index.
-    private static func parseFile(_ fileURL: URL) -> [ClaudeCachedEntry] {
+    /// Returns nil when the file cannot be opened or fully read, so callers never cache a failure.
+    private static func parseFile(_ fileURL: URL) -> [ClaudeCachedEntry]? {
         let fd = open(fileURL.path, O_RDONLY)
-        guard fd >= 0 else { return [] }
+        guard fd >= 0 else { return nil }
         defer { close(fd) }
 
         let decoder = JSONDecoder()
@@ -143,7 +147,8 @@ public enum ClaudeTokenUsageProvider {
                 read(fd, raw.baseAddress! + end, raw.count - end)
             }
             if readCount < 0 && errno == EINTR { continue }
-            if readCount <= 0 { break }
+            if readCount < 0 { return nil }
+            if readCount == 0 { break }
 
             let scanFrom = end
             end += readCount

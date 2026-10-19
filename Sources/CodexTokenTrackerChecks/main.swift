@@ -846,6 +846,21 @@ let claudeRemoved = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsD
 expect(claudeRemoved?.monthly.usage.totalTokens == 15 + 25 + 100, "a removed Claude transcript should be evicted from the totals")
 let claudeRemovedAgain = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
 expect(claudeRemovedAgain == claudeRemoved, "a Claude load after eviction should stay stable")
+
+// A transient read failure must not be cached: the next load counts the file once readable.
+let claudeUnreadable = claudeProjectA.appendingPathComponent("locked.jsonl")
+try claudeLine(requestId: "r5", timestamp: claudeCheckStamp, inputTokens: 1000, outputTokens: 0)
+    .write(to: claudeUnreadable, atomically: true, encoding: .utf8)
+let claudeLockedModified = try FileManager.default.attributesOfItem(atPath: claudeUnreadable.path)[.modificationDate] as? Date
+try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: claudeUnreadable.path)
+let claudeLocked = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeLocked?.monthly.usage.totalTokens == 15 + 25 + 100, "an unreadable Claude transcript should contribute no usage")
+try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: claudeUnreadable.path)
+if let claudeLockedModified {
+    try FileManager.default.setAttributes([.modificationDate: claudeLockedModified], ofItemAtPath: claudeUnreadable.path)
+}
+let claudeUnlocked = ClaudeTokenUsageProvider.load(now: claudeCheckNow, projectsDirectory: claudeProjects)
+expect(claudeUnlocked?.monthly.usage.totalTokens == 15 + 25 + 100 + 1000, "a Claude transcript that failed to read should be counted once readable, not cached empty")
 try? FileManager.default.removeItem(at: claudeProjects)
 
 print("CodexTokenTracker checks passed")
