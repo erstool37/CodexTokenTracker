@@ -135,9 +135,16 @@ private struct ProviderPaneView: View {
     }
 
     private func errorView(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("Unavailable", systemImage: "exclamationmark.triangle")
-                .font(.caption)
+        // A rate-limit is a transient, self-healing state — present it calmly (clock, neutral)
+        // rather than as a hard "⚠ Unavailable" error so it doesn't read as something broken.
+        let isRateLimited = message.localizedCaseInsensitiveContains("rate-limit")
+        return VStack(alignment: .leading, spacing: 4) {
+            Label(
+                isRateLimited ? "Waiting" : "Unavailable",
+                systemImage: isRateLimited ? "clock.arrow.circlepath" : "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .foregroundStyle(isRateLimited ? .secondary : .primary)
             Text(message)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
