@@ -43,8 +43,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     // on every popover open, and on a timer, so without a guard those calls stack up, trip the
     // limit, and then every subsequent call 429s — surfacing as a persistent "Anthropic API
     // error" in the pane. These three fields turn the provider into the single choke point:
-    //  • `cachedSnapshot` — last good result, served (marked stale by its old `refreshedAt`)
-    //    instead of erroring while we're throttled or rate-limited.
+    //  • `cachedSnapshot` — last good result, reused while throttled. While rate-limited the
+    //    provider throws instead, so the store keeps the old data *and* shows why it is old.
     //  • `rateLimitedUntil` — hard network cutoff after a 429; honors the server's Retry-After.
     //  • `lastSuccessfulFetch` — collapses bursts of refreshes into one network call.
     private let stateLock = NSLock()
@@ -56,6 +56,13 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// this task instead of each starting their own request — otherwise both could read a stale
     /// `lastSuccessfulFetch` before either updates it, doubling up calls against the rate limit.
     private var inFlightTask: Task<CodexStatusSnapshot, Error>?
+    private var inFlightStartedAt: Date?
+    /// Identifies the current in-flight fetch so an abandoned one can't clear its successor.
+    private var inFlightID = 0
+    /// An in-flight fetch older than this is abandoned rather than joined. Every stage is bounded
+    /// (keychain 30s, network 30s), so reaching this means something stalled; joining it would
+    /// wedge every later refresh behind it.
+    private let maxInFlightAge: TimeInterval = 90
     /// Minimum spacing between real network fetches; rapid popover opens reuse the cache.
     private let minFetchInterval: TimeInterval = 120
     /// Cap on how long we'll honor a server Retry-After before probing again.
@@ -63,8 +70,22 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// Fallback cooldown when a 429 arrives without a usable Retry-After header.
     private let defaultRateLimitCooldown: TimeInterval = 300
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = ClaudeUsageProvider.makeSession()) {
         self.session = session
+    }
+
+    /// `URLSession.shared` has no total-duration cap (its resource timeout is 7 days), so a request
+    /// that stalls — e.g. across a network change — never completes, the coalesced in-flight task
+    /// never clears, and every later refresh joins it forever. A dedicated ephemeral session bounds
+    /// each request end to end and keeps usage responses out of the on-disk URL cache.
+    public static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        configuration.waitsForConnectivity = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
     }
 
     private enum FetchDecision {
@@ -82,20 +103,27 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         // in-flight check the prior fetch had already finished and cleared `inFlightTask`,
         // so it would start a fresh duplicate request and re-trigger the rate limit.
         let decision: FetchDecision = stateLock.withLock {
-            if let until = rateLimitedUntil, now < until {
-                if let cached = cachedSnapshot { return .cached(cached) }
+            // Interval checks require a non-negative age, so a backwards wall-clock jump can't
+            // pin the provider to its cache or cooldown until the clock catches up.
+            if let until = rateLimitedUntil,
+               (0..<maxRateLimitCooldown).contains(until.timeIntervalSince(now)) {
                 return .rateLimited(until)
             }
             if let last = lastSuccessfulFetch,
-               now.timeIntervalSince(last) < minFetchInterval,
+               (0..<minFetchInterval).contains(now.timeIntervalSince(last)),
                let cached = cachedSnapshot {
                 return .cached(cached)
             }
-            if let inFlightTask {
+            if let inFlightTask, let started = inFlightStartedAt,
+               (0..<maxInFlightAge).contains(now.timeIntervalSince(started)) {
                 return .join(inFlightTask)
             }
-            let newTask = Task { try await self.performNetworkFetch() }
+            inFlightTask?.cancel()
+            inFlightID += 1
+            let id = inFlightID
+            let newTask = Task { try await self.performNetworkFetch(id: id) }
             inFlightTask = newTask
+            inFlightStartedAt = now
             return .join(newTask)
         }
 
@@ -112,9 +140,13 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// Performs the actual `/api/oauth/usage` request and updates the shared cache/rate-limit
     /// state. Only ever reached through the coalescing `Task` in `fetchStatus()`, so at most one
     /// of these runs at a time per provider instance.
-    private func performNetworkFetch() async throws -> CodexStatusSnapshot {
+    private func performNetworkFetch(id: Int) async throws -> CodexStatusSnapshot {
         defer {
-            stateLock.withLock { inFlightTask = nil }
+            stateLock.withLock {
+                guard inFlightID == id else { return }
+                inFlightTask = nil
+                inFlightStartedAt = nil
+            }
         }
 
         let token = try ClaudeKeychain.readAccessToken()
@@ -146,13 +178,10 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
             if http.statusCode == 429 {
                 let cooldown = min(Self.retryAfterSeconds(from: http) ?? defaultRateLimitCooldown, maxRateLimitCooldown)
                 let until = responseReceivedAt.addingTimeInterval(cooldown)
-                let cached = stateLock.withLock { () -> CodexStatusSnapshot? in
-                    rateLimitedUntil = until
-                    return cachedSnapshot
-                }
+                stateLock.withLock { rateLimitedUntil = until }
                 Self.log.debug("claude usage rate-limited; backing off until \(until, privacy: .public)")
-                // Keep showing the last good data (stale) rather than an error whenever we can.
-                if let cached { return withFreshLocalStats(cached) }
+                // The store keeps its previous snapshot on failure, so throwing still shows the
+                // last good data — now alongside the "Waiting" state instead of silently frozen.
                 throw ClaudeUsageError.rateLimited(until: until)
             }
             throw ClaudeUsageError.http(status: http.statusCode, body: body)

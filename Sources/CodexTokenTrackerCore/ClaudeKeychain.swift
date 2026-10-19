@@ -8,6 +8,8 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
     case malformedSecret
     /// Any other Keychain failure (including a user-denied access prompt).
     case keychainStatus(OSStatus)
+    /// `/usr/bin/security` did not exit in time (e.g. an unanswered access prompt) and was killed.
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -18,6 +20,8 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
         case let .keychainStatus(status):
             let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
             return "Keychain error: \(message)"
+        case .timedOut:
+            return "Keychain read timed out — retrying on next refresh."
         }
     }
 }
@@ -43,6 +47,8 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
 /// on `security`'s stdout, never via argv, so it is not exposed in the process list.
 public enum ClaudeKeychain {
     private static let service = "Claude Code-credentials"
+    /// Long enough to answer a keychain access prompt, short enough that a stuck read recovers.
+    private static let securityTimeout: TimeInterval = 30
 
     private struct Stored: Decodable {
         struct OAuth: Decodable {
@@ -95,9 +101,22 @@ public enum ClaudeKeychain {
             throw ClaudeKeychainError.keychainStatus(errSecInternalComponent)
         }
 
+        // Bound the read: if `security` never exits (e.g. an unanswered keychain prompt), the
+        // blocking reads below would pin the fetch forever. Killing it closes the pipes, so the
+        // reads return and the non-zero exit surfaces as a keychain error instead of a hang.
+        let watchdog = DispatchWorkItem { [process] in
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + securityTimeout, execute: watchdog)
+        defer { watchdog.cancel() }
+
         let outData = stdout.fileHandleForReading.readDataToEndOfFile()
         stderr.fileHandleForReading.readDataToEndOfFile() // drain to avoid a full-pipe stall
         process.waitUntilExit()
+
+        if process.terminationReason == .uncaughtSignal {
+            throw ClaudeKeychainError.timedOut
+        }
 
         switch process.terminationStatus {
         case 0:

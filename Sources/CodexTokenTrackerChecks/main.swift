@@ -750,4 +750,56 @@ if case let .loaded(snapshot) = await MainActor.run(body: { retryingOnlineUsageS
 let retryingOnlineUsageCalls = await retryingOnlineUsageProvider.callCount()
 expect(retryingOnlineUsageCalls == 2, "online usage error should retry once")
 
+// A provider call that never returns must not wedge the store: the refresh timeout fails it,
+// and the next refresh starts a fresh provider call instead of being swallowed.
+actor HangOnceStatusProvider: StatusProviding {
+    private var fetchCount = 0
+    private let snapshot: CodexStatusSnapshot
+
+    init(snapshot: CodexStatusSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func fetchStatus() async throws -> CodexStatusSnapshot {
+        fetchCount += 1
+        if fetchCount == 1 {
+            try await Task.sleep(for: .seconds(3600))
+        }
+        return snapshot
+    }
+
+    func callCount() -> Int {
+        fetchCount
+    }
+}
+
+let hangProvider = HangOnceStatusProvider(snapshot: retrySuccessSnapshot)
+let hangStore = StatusStore(
+    provider: hangProvider,
+    tokenStatsLoader: { _, _ in nil },
+    refreshRetryPolicy: .disabled,
+    refreshTimeout: .milliseconds(200),
+    now: { statsNow }
+)
+await MainActor.run {
+    hangStore.refresh()
+    hangStore.refresh()
+}
+await waitForRefreshToFinish(hangStore)
+if case let .failed(_, message) = await MainActor.run(body: { hangStore.state }) {
+    expect(message.contains("timed out"), "a hung refresh should fail with a timeout message — got \(message)")
+} else {
+    expect(false, "a hung refresh should move the store to failed once the timeout elapses")
+}
+let hangCallsBeforeRetry = await hangProvider.callCount()
+expect(hangCallsBeforeRetry == 1, "a refresh during the hung call should not start a second provider call")
+await MainActor.run { hangStore.refresh() }
+await waitForLoadedSnapshot(
+    hangStore,
+    matching: { $0 == retrySuccessSnapshot },
+    message: "the refresh after a timeout should start a fresh provider call and load data"
+)
+let hangCallsAfterRetry = await hangProvider.callCount()
+expect(hangCallsAfterRetry == 2, "timeout recovery should start exactly one replacement provider call")
+
 print("CodexTokenTracker checks passed")

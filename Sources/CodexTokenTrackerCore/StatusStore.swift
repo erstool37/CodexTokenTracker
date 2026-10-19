@@ -25,6 +25,11 @@ public final class StatusStore: ObservableObject {
     private var staleTicker: Task<Void, Never>?
     private var refreshTicker: Task<Void, Never>?
     private var retryAttempt = 0
+    private var refreshWatchdog: Task<Void, Never>?
+    private var refreshGeneration = 0
+    /// A refresh still running after this long is treated as hung and abandoned, so one stuck
+    /// provider call can't leave `isRefreshing` set and silently swallow every later refresh.
+    private let refreshTimeout: Duration
 
     public init(
         provider: StatusProviding = AppServerStatusProvider(),
@@ -35,8 +40,10 @@ public final class StatusStore: ObservableObject {
             return TokenUsageStatsProvider.load(for: account, now: date)
         },
         refreshRetryPolicy: RefreshRetryPolicy = .live,
+        refreshTimeout: Duration = .seconds(120),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.refreshTimeout = refreshTimeout
         self.provider = provider
         self.tokenStatsLoader = tokenStatsLoader
         self.refreshRetryPolicy = refreshRetryPolicy
@@ -60,6 +67,7 @@ public final class StatusStore: ObservableObject {
         retryTask?.cancel()
         staleTicker?.cancel()
         refreshTicker?.cancel()
+        refreshWatchdog?.cancel()
     }
 
     public var currentSnapshot: CodexStatusSnapshot? {
@@ -108,6 +116,8 @@ public final class StatusStore: ObservableObject {
             return
         }
         isRefreshing = true
+        refreshGeneration += 1
+        scheduleRefreshWatchdog(generation: refreshGeneration)
         if previous == nil {
             state = .refreshing
         }
@@ -140,6 +150,25 @@ public final class StatusStore: ObservableObject {
                 isRefreshing = false
                 scheduleRetryIfAvailable()
             }
+        }
+    }
+
+    /// Fails a refresh that outlives `refreshTimeout`. The abandoned task's late result is dropped
+    /// by its `Task.isCancelled` guards, and the next refresh starts a fresh provider call.
+    private func scheduleRefreshWatchdog(generation: Int) {
+        refreshWatchdog?.cancel()
+        refreshWatchdog = Task { @MainActor [weak self, refreshTimeout] in
+            try? await Task.sleep(for: refreshTimeout)
+            guard let self, !Task.isCancelled,
+                  self.isRefreshing, self.refreshGeneration == generation else {
+                return
+            }
+            self.refreshTask?.cancel()
+            self.state = .failed(
+                previous: self.currentSnapshot,
+                message: "Refresh timed out — retrying on next refresh."
+            )
+            self.isRefreshing = false
         }
     }
 
