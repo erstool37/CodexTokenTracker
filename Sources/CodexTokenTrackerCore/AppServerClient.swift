@@ -43,7 +43,51 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         }.value
     }
 
+    /// The Codex pane shows only the monthly credit allowance (used / limit), read from the same
+    /// backend endpoint the Codex desktop app uses; see CodexMonthlyCreditsProvider. The
+    /// app-server contributes only a limit-reached status, so its failure never blanks the
+    /// monthly figure.
     private func fetchStatusSync() throws -> CodexStatusSnapshot {
+        let now = Date()
+        let monthly = monthlyCreditsProvider.fetchSync(now: now)
+        let server: CodexStatusSnapshot?
+        let serverError: Error?
+        do {
+            server = try fetchAppServerSync()
+            serverError = nil
+        } catch {
+            server = nil
+            serverError = error
+        }
+        if server == nil, monthly.credits == nil, let serverError {
+            throw serverError
+        }
+
+        var monthlyBucket: LimitBucketDisplay
+        if let credits = monthly.credits {
+            monthlyBucket = CodexMonthlyCreditsMapper.bucket(from: credits, now: now, stale: monthly.error != nil)
+        } else {
+            monthlyBucket = LimitBucketDisplay(
+                id: "codex",
+                label: "Codex",
+                windows: [],
+                creditsText: nil,
+                statusText: monthly.error?.localizedDescription ?? CodexMonthlyCreditsError.unrecognizedResponse.localizedDescription
+            )
+        }
+        if let reachedStatus = server?.limits.compactMap(\.statusText).first {
+            monthlyBucket.statusText = reachedStatus
+        }
+        return CodexStatusSnapshot(
+            account: server?.account ?? AccountDisplay(kind: "Codex", email: nil, plan: nil, requiresOpenAIAuth: false),
+            limits: [monthlyBucket],
+            // A value served from cache keeps its own fetch time so the pane shows it as stale.
+            refreshedAt: monthly.error == nil ? now : (monthly.credits?.fetchedAt ?? now)
+        )
+    }
+
+    /// One app-server round trip: account and rate limits, mapped as the server reports them.
+    private func fetchAppServerSync() throws -> CodexStatusSnapshot {
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw AppServerClientError.codexNotFound
         }
@@ -125,31 +169,9 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
             )
             let accountDisplay = StatusMapper.accountDisplay(from: account)
             let now = Date()
-            // The Codex pane shows only the monthly credit allowance (used / limit), read from the
-            // same backend endpoint the Codex desktop app uses; see CodexMonthlyCreditsProvider.
-            // The app-server's 5h/weekly windows and token stats are not shown, but a
-            // limit-reached status from the app-server still is.
-            let serverLimits = StatusMapper.limitDisplays(from: rateLimits, now: now)
-            let reachedStatus = serverLimits.compactMap(\.statusText).first
-            let monthly = monthlyCreditsProvider.fetchSync(now: now)
-            var monthlyBucket: LimitBucketDisplay
-            if let credits = monthly.credits {
-                monthlyBucket = CodexMonthlyCreditsMapper.bucket(from: credits, now: now, stale: monthly.error != nil)
-            } else {
-                monthlyBucket = LimitBucketDisplay(
-                    id: "codex",
-                    label: "Codex",
-                    windows: [],
-                    creditsText: nil,
-                    statusText: monthly.error?.localizedDescription ?? CodexMonthlyCreditsError.unrecognizedResponse.localizedDescription
-                )
-            }
-            if let reachedStatus {
-                monthlyBucket.statusText = reachedStatus
-            }
             return CodexStatusSnapshot(
                 account: accountDisplay,
-                limits: [monthlyBucket],
+                limits: StatusMapper.limitDisplays(from: rateLimits, now: now),
                 refreshedAt: now
             )
         } catch {

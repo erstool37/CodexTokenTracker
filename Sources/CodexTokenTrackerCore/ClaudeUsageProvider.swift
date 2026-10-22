@@ -57,14 +57,31 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// `lastSuccessfulFetch` before either updates it, doubling up calls against the rate limit.
     private var inFlightTask: Task<CodexStatusSnapshot, Error>?
     /// Minimum spacing between real network fetches; rapid popover opens reuse the cache.
-    private let minFetchInterval: TimeInterval = 120
+    private let minFetchInterval: TimeInterval = 60
     /// Cap on how long we'll honor a server Retry-After before probing again.
     private let maxRateLimitCooldown: TimeInterval = 3600
     /// Fallback cooldown when a 429 arrives without a usable Retry-After header.
     private let defaultRateLimitCooldown: TimeInterval = 300
 
-    public init(session: URLSession = .shared) {
+    /// Last good payload on disk, so the last known values survive failed calls and restarts.
+    private let lastGood: LastGoodPayloadStore
+    /// Local transcript totals. The first scan reads every transcript from the last 28 days
+    /// (gigabytes), so it runs in the background and never delays the plan limits; refreshes
+    /// show the latest finished result.
+    private var latestLocalStats: TokenUsageStats?
+    private var localStatsTask: Task<Void, Never>?
+
+    public init(
+        session: URLSession = .shared,
+        lastGood: LastGoodPayloadStore = LastGoodPayloadStore(fileName: "claude-usage.json")
+    ) {
         self.session = session
+        self.lastGood = lastGood
+        if let saved = lastGood.load(),
+           let snapshot = try? ClaudeUsageMapper.snapshot(fromJSON: saved.data, now: saved.savedAt),
+           !snapshot.limits.isEmpty {
+            cachedSnapshot = snapshot
+        }
     }
 
     private enum FetchDecision {
@@ -105,7 +122,17 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         case let .rateLimited(until):
             throw ClaudeUsageError.rateLimited(until: until)
         case let .join(task):
-            return try await task.value
+            do {
+                return try await task.value
+            } catch {
+                Self.log.error("claude usage fetch failed: \(error.localizedDescription, privacy: .public)")
+                // Any failure (network, keychain, HTTP, decode) keeps the last known values on
+                // screen; their old `refreshedAt` marks them stale.
+                if let cached = stateLock.withLock({ cachedSnapshot }) {
+                    return withFreshLocalStats(cached)
+                }
+                throw error
+            }
         }
     }
 
@@ -162,8 +189,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         let fetchedAt = Date()
         var snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: fetchedAt)
 
-        // Aggregate local Claude Code transcripts (Fable excluded) and surface as the usage card.
-        snapshot.onlineTokenStats = ClaudeTokenUsageProvider.load(now: fetchedAt)
+        // Local Claude Code transcripts (Fable excluded), surfaced as the usage card.
+        snapshot.onlineTokenStats = currentLocalStats()
 
         if snapshot.limits.isEmpty {
             throw ClaudeUsageError.emptyShape(body: body)
@@ -174,6 +201,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
             lastSuccessfulFetch = fetchedAt
             rateLimitedUntil = nil
         }
+        lastGood.save(data)
         return snapshot
     }
 
@@ -181,8 +209,25 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// `refreshedAt` is intentionally left untouched so the popover renders it as stale data.
     private func withFreshLocalStats(_ snapshot: CodexStatusSnapshot) -> CodexStatusSnapshot {
         var copy = snapshot
-        copy.onlineTokenStats = ClaudeTokenUsageProvider.load(now: Date())
+        copy.onlineTokenStats = currentLocalStats() ?? snapshot.onlineTokenStats
         return copy
+    }
+
+    /// Latest finished transcript totals; starts a background rescan when none is running.
+    private func currentLocalStats() -> TokenUsageStats? {
+        stateLock.withLock {
+            if localStatsTask == nil {
+                localStatsTask = Task.detached(priority: .utility) { [weak self] in
+                    let stats = ClaudeTokenUsageProvider.load(now: Date())
+                    guard let self else { return }
+                    self.stateLock.withLock {
+                        if let stats { self.latestLocalStats = stats }
+                        self.localStatsTask = nil
+                    }
+                }
+            }
+            return latestLocalStats
+        }
     }
 
     /// Parse a `Retry-After` header, which may be an integer number of seconds or an HTTP date.

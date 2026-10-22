@@ -79,27 +79,29 @@ public final class CodexMonthlyCreditsProvider: @unchecked Sendable {
     private let authFileURL: URL
     private let stateLock = NSLock()
     private var cached: CodexMonthlyCredits?
-
-    /// How long a previously fetched value is still shown when a refresh fails. Long enough to
-    /// ride out a token refresh or a flaky network; short enough that a genuinely broken sign-in
-    /// eventually reads as unavailable rather than as a frozen number.
-    private let cacheGrace: TimeInterval = 6 * 60 * 60
+    /// Last good payload on disk, so the last known value survives failed calls and restarts.
+    private let lastGood: LastGoodPayloadStore
 
     public init(
         session: URLSession = .shared,
         authFileURL: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/auth.json")
+            .appendingPathComponent(".codex/auth.json"),
+        lastGood: LastGoodPayloadStore = LastGoodPayloadStore(fileName: "codex-monthly-usage.json")
     ) {
         self.session = session
         self.authFileURL = authFileURL
+        self.lastGood = lastGood
+        if let saved = lastGood.load() {
+            cached = CodexMonthlyCreditsMapper.parse(json: saved.data, now: saved.savedAt)
+        }
     }
 
     // MARK: - Fetching
 
     /// Synchronous fetch for callers that are already off the main thread (the app-server
-    /// provider assembles its snapshot inside a detached task). On failure the last good value is
-    /// returned while it is inside the grace window, and the error is surfaced alongside it so
-    /// the UI can mark the number stale.
+    /// provider assembles its snapshot inside a detached task). On failure the last good value
+    /// (in memory, else from disk) is returned with the error alongside it, so the UI keeps the
+    /// number and marks it stale.
     public func fetchSync(now: Date = Date(), timeout: TimeInterval = 15) -> (credits: CodexMonthlyCredits?, error: Error?) {
         do {
             let fresh = try performFetchSync(now: now, timeout: timeout)
@@ -107,11 +109,10 @@ public final class CodexMonthlyCreditsProvider: @unchecked Sendable {
             return (fresh, nil)
         } catch {
             Self.log.debug("monthly credits fetch failed: \(error.localizedDescription, privacy: .public)")
+            // A value from an earlier month is not this month's usage; don't carry it over a reset.
             let fallback = stateLock.withLock { cached }
-            if let fallback, now.timeIntervalSince(fallback.fetchedAt) <= cacheGrace {
-                return (fallback, error)
-            }
-            return (nil, error)
+                .flatMap { Calendar.current.isDate($0.fetchedAt, equalTo: now, toGranularity: .month) ? $0 : nil }
+            return (fallback, error)
         }
     }
 
@@ -126,6 +127,7 @@ public final class CodexMonthlyCreditsProvider: @unchecked Sendable {
         guard let parsed = CodexMonthlyCreditsMapper.parse(json: data, now: now) else {
             throw CodexMonthlyCreditsError.unrecognizedResponse
         }
+        lastGood.save(data)
         return parsed
     }
 

@@ -48,13 +48,13 @@ struct StatusPopoverView: View {
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: .infinity, alignment: .top)
 
             Divider()
             footer
         }
         .padding(10)
-        .frame(width: 420, height: 400)
+        .frame(width: 420)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var footer: some View {
@@ -100,8 +100,7 @@ private struct ProviderPaneView: View {
     let accent: Color
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(accent)
@@ -116,10 +115,9 @@ private struct ProviderPaneView: View {
                         SnapshotView(snapshot: previous, stale: true)
                     }
                     errorView(message)
-                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .environment(\.providerAccent, accent)
     }
 

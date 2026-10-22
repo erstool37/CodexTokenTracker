@@ -62,6 +62,8 @@ public enum ClaudeTokenUsageProvider {
 
     // MARK: - Per-file parsing
 
+    private static let assistantMarker = Array(#""type":"assistant""#.utf8)
+
     /// True for any Claude Fable model id or display name.
     public static func isFable(_ model: String) -> Bool {
         model.lowercased().contains("fable")
@@ -70,7 +72,8 @@ public enum ClaudeTokenUsageProvider {
     static func parseFile(_ fileURL: URL) -> [ClaudeTranscriptRecord] {
         var records: [ClaudeTranscriptRecord] = []
         let decoder = JSONDecoder()
-        JSONLines.forEach(in: fileURL) { line in
+        // Only assistant lines carry usage; most transcript bytes are user/tool-result lines.
+        JSONLines.forEach(in: fileURL, containing: assistantMarker) { line in
             if let record = parseLine(line, decoder: decoder) {
                 records.append(record)
             }
