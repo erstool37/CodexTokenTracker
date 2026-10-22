@@ -48,13 +48,13 @@ struct StatusPopoverView: View {
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: .infinity, alignment: .top)
 
             Divider()
             footer
         }
         .padding(10)
-        .frame(width: 420, height: 400)
+        .frame(width: 420)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var footer: some View {
@@ -100,8 +100,7 @@ private struct ProviderPaneView: View {
     let accent: Color
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(accent)
@@ -116,10 +115,9 @@ private struct ProviderPaneView: View {
                         SnapshotView(snapshot: previous, stale: true)
                     }
                     errorView(message)
-                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .environment(\.providerAccent, accent)
     }
 
@@ -135,9 +133,16 @@ private struct ProviderPaneView: View {
     }
 
     private func errorView(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("Unavailable", systemImage: "exclamationmark.triangle")
-                .font(.caption)
+        // A rate-limit is a transient, self-healing state — present it calmly (clock, neutral)
+        // rather than as a hard "⚠ Unavailable" error so it doesn't read as something broken.
+        let isRateLimited = message.localizedCaseInsensitiveContains("rate-limit")
+        return VStack(alignment: .leading, spacing: 4) {
+            Label(
+                isRateLimited ? "Waiting" : "Unavailable",
+                systemImage: isRateLimited ? "clock.arrow.circlepath" : "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .foregroundStyle(isRateLimited ? .secondary : .primary)
             Text(message)
                 .font(.caption2)
                 .foregroundStyle(.secondary)

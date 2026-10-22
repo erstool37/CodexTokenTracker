@@ -163,6 +163,8 @@ expect(StatusFormatter.percentLeft(from: 54.4) == 46, "percent left should round
 expect(StatusFormatter.percentLeft(from: 130) == 0, "percent left should clamp low")
 expect(StatusFormatter.windowLabel(minutes: 300, fallback: "5h limit") == "5h limit", "300 minutes should be 5h")
 expect(StatusFormatter.windowLabel(minutes: 10_080, fallback: "Weekly limit") == "Weekly limit", "10080 minutes should be weekly")
+expect(StatusFormatter.windowLabel(minutes: 43_200, fallback: "Weekly limit") == "Monthly limit", "43200 minutes should be monthly")
+expect(StatusFormatter.windowLabel(minutes: 86_400, fallback: "Weekly limit") == "2mo limit", "86400 minutes should be 2 months")
 
 let json = """
 {
@@ -225,10 +227,9 @@ let claudeAdaptiveJSON = """
 let claudeSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
 expect(claudeSnapshot.limits.count == 1, "Claude maps to a single bucket")
 let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
-expect(claudeLabels == ["5h limit", "Weekly limit", "Weekly · Fable"], "limits[] drives windows adaptively, including Fable — got \(claudeLabels)")
+expect(claudeLabels == ["5h limit", "Weekly limit"], "limits[] drives windows adaptively, Fable excluded — got \(claudeLabels)")
 expect(claudeSnapshot.limits[0].windows[0].percentLeft == 89, "session percent left should map from `percent`")
-expect(claudeSnapshot.limits[0].windows[2].percentLeft == 60, "Fable percent left should map from `percent`")
-expect(claudeSnapshot.limits[0].windows[2].resetsAtText != nil, "Fable window should carry a reset time")
+expect(ClaudeTokenUsageProvider.isFable("claude-fable-5-1") && !ClaudeTokenUsageProvider.isFable("claude-opus-5-5"), "Fable models are recognized for exclusion")
 expect(claudeSnapshot.limits[0].creditsText == nil, "disabled spend/extra_usage should show no credits line")
 
 // When `limits[]` is absent, the legacy top-level fields still render (backward compatibility).
@@ -351,10 +352,11 @@ expect(fallbackUsageIndex != nil, "popover should render local stats only as an 
 expect(usageCardIndex != nil, "popover should define a single compact usage card")
 expect(limitsIndex != nil, "popover should render codex limits")
 expect(limitsIndex! < usageCardIndex!, "codex limits should render before usage stats")
-expect(popoverSource.contains(".frame(width: 420, height: 400)"), "popover content should use the widened 420x400 size")
+expect(popoverSource.contains(".frame(width: 420)") && popoverSource.contains(".fixedSize(horizontal: false, vertical: true)"), "popover should be 420pt wide with content-driven height")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
 expect(!popoverSource.contains(".frame(width: 520)"), "popover content should not use the too-wide 520 point layout")
-expect(statusBarControllerSource.contains("popoverSize = NSSize(width: 420, height: 400)"), "popover controller should use the widened 420pt width")
+expect(statusBarControllerSource.contains("host.sizingOptions = [.preferredContentSize]"), "popover should size itself to its content")
+expect(statusBarControllerSource.contains("sendAction(on: [.leftMouseUp, .rightMouseUp])"), "left click refreshes, right click opens the popover")
 expect(popoverSource.contains("ProviderPaneView("), "popover should render Codex and Claude as two side-by-side provider panes")
 expect(popoverSource.contains("title: \"Codex\"") && popoverSource.contains("title: \"Claude\""), "popover should label a Codex pane and a Claude pane")
 expect(!popoverSource.contains("TokenStatsComparisonView"), "exact usage should replace the old online/device comparison row")
@@ -747,5 +749,55 @@ if case let .loaded(snapshot) = await MainActor.run(body: { retryingOnlineUsageS
 }
 let retryingOnlineUsageCalls = await retryingOnlineUsageProvider.callCount()
 expect(retryingOnlineUsageCalls == 2, "online usage error should retry once")
+
+// Codex monthly credits: the exact payload the spend-controls endpoint returned for this
+// account on 2026-09-20, mapped to the Codex pane's "Monthly credits" window.
+let monthlyNow = ISO8601DateFormatter().date(from: "2026-09-20T14:00:00Z")!
+var monthlyCalendar = Calendar(identifier: .gregorian)
+monthlyCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+let monthlyJSON = #"{"balance_unit":"credit","effective_monthly_limit":{"limit":7000,"enforcement_mode":"HARD_CAP","limit_mode":"amount_credits"},"current_month_usage":1780.1994230747223}"#
+    .data(using: .utf8)!
+let monthly = CodexMonthlyCreditsMapper.parse(json: monthlyJSON, now: monthlyNow)
+expect(monthly != nil, "the spend-controls payload parses")
+expect(monthly?.limit == 7000, "monthly limit is read from effective_monthly_limit.limit")
+expect(monthly?.balanceUnit == "credit", "balance unit is read")
+expect(abs((monthly?.percentUsed ?? 0) - 25.43) < 0.01, "percent used is used / limit — got \(monthly?.percentUsed ?? -1)")
+let monthlyBucket = CodexMonthlyCreditsMapper.bucket(from: monthly!, now: monthlyNow, calendar: monthlyCalendar)
+expect(monthlyBucket.id == "codex" && monthlyBucket.label == "Codex", "the monthly window lives in the Codex bucket")
+expect(monthlyBucket.windows.map(\.label) == ["Monthly credits"], "one window, labelled Monthly credits")
+expect(monthlyBucket.windows[0].percentLeft == 75, "75% of the monthly allowance is left")
+expect(monthlyBucket.creditsText == "1,780 / 7,000 credits", "credits line is used / limit — got \(monthlyBucket.creditsText ?? "nil")")
+expect(monthlyBucket.windows[0].resetsAtText?.contains("1 Oct") == true, "a monthly allowance resets on the 1st — got \(monthlyBucket.windows[0].resetsAtText ?? "nil")")
+expect(monthlyBucket.statusText == nil, "a fresh value carries no stale note")
+expect(
+    CodexMonthlyCreditsMapper.bucket(from: monthly!, now: monthlyNow, calendar: monthlyCalendar, stale: true).statusText != nil,
+    "a value served from cache after a failed refresh is marked stale"
+)
+
+// Merging: joins an existing codex bucket rather than duplicating it, and leads a new list.
+let existingCodex = LimitBucketDisplay(id: "codex", label: "Codex", windows: [], creditsText: nil)
+let merged = CodexMonthlyCreditsMapper.merge(monthlyBucket, into: [existingCodex])
+expect(merged.count == 1 && merged[0].windows.map(\.label) == ["Monthly credits"], "monthly window merges into the existing Codex bucket")
+expect(merged[0].creditsText == "1,780 / 7,000 credits", "merge carries the credits line")
+let mergedEmpty = CodexMonthlyCreditsMapper.merge(monthlyBucket, into: [])
+expect(mergedEmpty.count == 1 && mergedEmpty[0].id == "codex", "with no buckets the monthly bucket is added")
+
+// The desktop app hides its monthly panel for these shapes; so do we.
+expect(
+    CodexMonthlyCreditsMapper.parse(json: #"{"balance_unit":"credit","effective_monthly_limit":{"limit_mode":"unlimited_platform_max"},"current_month_usage":12}"#.data(using: .utf8)!, now: monthlyNow) == nil,
+    "an unlimited platform max is not a monthly limit"
+)
+expect(
+    CodexMonthlyCreditsMapper.parse(json: #"{"balance_unit":"credit","current_month_usage":12}"#.data(using: .utf8)!, now: monthlyNow) == nil,
+    "no effective_monthly_limit means no monthly window"
+)
+// A typed amount in the account's unit takes precedence over the plain limit.
+let typedLimit = CodexMonthlyCreditsMapper.parse(json: #"{"balance_unit":"credit","effective_monthly_limit":{"limit":1,"limit_amount":{"amount":5000,"unit":"credit"},"limit_mode":"amount_credits"},"current_month_usage":250}"#.data(using: .utf8)!, now: monthlyNow)
+expect(typedLimit?.limit == 5000, "limit_amount in the balance unit wins over the plain limit")
+expect(
+    CodexMonthlyCreditsProvider.endpointForTesting(accountID: "acct-1").absoluteString
+        == "https://chatgpt.com/backend-api/accounts/acct-1/spend-controls/current-user/monthly-usage?supports_usage_limit_modes=true",
+    "the endpoint matches the one the Codex desktop app calls"
+)
 
 print("CodexTokenTracker checks passed")

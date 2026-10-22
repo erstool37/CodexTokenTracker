@@ -35,6 +35,7 @@ public final class StatusStore: ObservableObject {
             return TokenUsageStatsProvider.load(for: account, now: date)
         },
         refreshRetryPolicy: RefreshRetryPolicy = .live,
+        autoRefreshInterval: Duration = .seconds(600),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.provider = provider
@@ -49,7 +50,7 @@ public final class StatusStore: ObservableObject {
         }
         refreshTicker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(600))
+                try? await Task.sleep(for: autoRefreshInterval)
                 self?.refresh()
             }
         }

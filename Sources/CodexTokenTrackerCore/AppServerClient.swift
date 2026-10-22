@@ -10,7 +10,7 @@ public enum AppServerClientError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .codexNotFound:
-            return "Could not find the codex executable in PATH, /opt/homebrew/bin, or /usr/local/bin."
+            return "Could not find the codex executable in PATH, ~/.local/bin, ~/.codex/packages/standalone/current/bin, /usr/local/bin, or /opt/homebrew/bin. Set CODEX_TOKEN_TRACKER_CODEX_BIN to override."
         case let .launchFailed(message):
             return "Failed to launch codex app-server: \(message)"
         case .noResponse:
@@ -30,9 +30,11 @@ public protocol StatusProviding: Sendable {
 public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable {
     private let executableURL: URL
     private let decoder = JSONDecoder()
+    private let monthlyCreditsProvider = CodexMonthlyCreditsProvider()
 
     public init(executableURL: URL? = AppServerStatusProvider.defaultCodexURL()) {
-        self.executableURL = executableURL ?? URL(fileURLWithPath: "/opt/homebrew/bin/codex")
+        self.executableURL = executableURL
+            ?? URL(fileURLWithPath: FileManager.default.homeDirectoryForCurrentUser.path + "/.local/bin/codex")
     }
 
     public func fetchStatus() async throws -> CodexStatusSnapshot {
@@ -41,7 +43,51 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         }.value
     }
 
+    /// The Codex pane shows only the monthly credit allowance (used / limit), read from the same
+    /// backend endpoint the Codex desktop app uses; see CodexMonthlyCreditsProvider. The
+    /// app-server contributes only a limit-reached status, so its failure never blanks the
+    /// monthly figure.
     private func fetchStatusSync() throws -> CodexStatusSnapshot {
+        let now = Date()
+        let monthly = monthlyCreditsProvider.fetchSync(now: now)
+        let server: CodexStatusSnapshot?
+        let serverError: Error?
+        do {
+            server = try fetchAppServerSync()
+            serverError = nil
+        } catch {
+            server = nil
+            serverError = error
+        }
+        if server == nil, monthly.credits == nil, let serverError {
+            throw serverError
+        }
+
+        var monthlyBucket: LimitBucketDisplay
+        if let credits = monthly.credits {
+            monthlyBucket = CodexMonthlyCreditsMapper.bucket(from: credits, now: now, stale: monthly.error != nil)
+        } else {
+            monthlyBucket = LimitBucketDisplay(
+                id: "codex",
+                label: "Codex",
+                windows: [],
+                creditsText: nil,
+                statusText: monthly.error?.localizedDescription ?? CodexMonthlyCreditsError.unrecognizedResponse.localizedDescription
+            )
+        }
+        if let reachedStatus = server?.limits.compactMap(\.statusText).first {
+            monthlyBucket.statusText = reachedStatus
+        }
+        return CodexStatusSnapshot(
+            account: server?.account ?? AccountDisplay(kind: "Codex", email: nil, plan: nil, requiresOpenAIAuth: false),
+            limits: [monthlyBucket],
+            // A value served from cache keeps its own fetch time so the pane shows it as stale.
+            refreshedAt: monthly.error == nil ? now : (monthly.credits?.fetchedAt ?? now)
+        )
+    }
+
+    /// One app-server round trip: account and rate limits, mapped as the server reports them.
+    private func fetchAppServerSync() throws -> CodexStatusSnapshot {
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw AppServerClientError.codexNotFound
         }
@@ -104,7 +150,6 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                 to: writer
             )
             try send(["method": "account/rateLimits/read", "id": 3], to: writer)
-            try send(["method": "account/usage/read", "id": 4], to: writer)
 
             let account = try waitForResponse(
                 GetAccountResponse.self,
@@ -122,42 +167,11 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
                 stderr: stderrBuffer,
                 timeout: 20
             )
-            let usageResult: Result<GetAccountTokenUsageResponse, Error>
-            do {
-                let usage = try waitForResponse(
-                    GetAccountTokenUsageResponse.self,
-                    expectedID: 4,
-                    from: process,
-                    stdout: stdoutBuffer,
-                    stderr: stderrBuffer,
-                    timeout: 12
-                )
-                usageResult = .success(usage)
-            } catch {
-                usageResult = .failure(error)
-            }
-
             let accountDisplay = StatusMapper.accountDisplay(from: account)
             let now = Date()
-            let onlineTokenStats: TokenUsageStats?
-            let onlineTokenStatsError: String?
-            let fallbackTokenStats: TokenUsageStats?
-            switch usageResult {
-            case let .success(usage):
-                onlineTokenStats = AccountUsageStatsProvider.stats(from: usage, now: now)
-                onlineTokenStatsError = nil
-                fallbackTokenStats = nil
-            case let .failure(error):
-                onlineTokenStats = nil
-                onlineTokenStatsError = error.localizedDescription
-                fallbackTokenStats = TokenUsageStatsProvider.load(for: accountDisplay, now: now)
-            }
             return CodexStatusSnapshot(
                 account: accountDisplay,
                 limits: StatusMapper.limitDisplays(from: rateLimits, now: now),
-                onlineTokenStats: onlineTokenStats,
-                onlineTokenStatsError: onlineTokenStatsError,
-                tokenStats: fallbackTokenStats,
                 refreshedAt: now
             )
         } catch {
@@ -287,17 +301,40 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         )
     }
 
+    /// Directories searched for `codex` when the app runs from Finder, where the
+    /// inherited PATH is only `/usr/bin:/bin:/usr/sbin:/sbin`. The standalone
+    /// installer (`~/.local/bin/codex` -> `~/.codex/packages/standalone/current`)
+    /// is the current install route; the Homebrew paths stay last as a fallback
+    /// for machines that still carry an old cask.
+    static let codexSearchDirectories: [String] = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return [
+            "\(home)/.local/bin",
+            "\(home)/.codex/packages/standalone/current/bin",
+            "\(home)/.codex/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/opt/homebrew/bin"
+        ]
+    }()
+
     public static func defaultCodexURL() -> URL? {
+        // An explicit override wins, so a non-standard install needs no rebuild.
+        if let override = ProcessInfo.processInfo.environment["CODEX_TOKEN_TRACKER_CODEX_BIN"],
+           FileManager.default.isExecutableFile(atPath: override) {
+            return URL(fileURLWithPath: override)
+        }
+
         let pathCandidates = ProcessInfo.processInfo.environment["PATH"]?
             .split(separator: ":")
             .map { String($0) + "/codex" } ?? []
-        let candidates = pathCandidates + [
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-            "/usr/bin/codex"
-        ]
+        let candidates = pathCandidates + codexSearchDirectories.map { $0 + "/codex" }
+
         return candidates
             .first { FileManager.default.isExecutableFile(atPath: $0) }
+            // Deliberately unresolved: `~/.local/bin/codex` points into a
+            // version-pinned release dir, so resolving would stick to a release
+            // that a later codex upgrade deletes.
             .map(URL.init(fileURLWithPath:))
     }
 

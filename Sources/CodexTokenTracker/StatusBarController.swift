@@ -5,7 +5,7 @@ import SwiftUI
 
 @MainActor
 final class StatusBarController: NSObject, NSPopoverDelegate {
-    private static let popoverSize = NSSize(width: 420, height: 400)
+    private static let popoverWidth: CGFloat = 420
     private static let screenMargin: CGFloat = 12
 
     private let statusItem: NSStatusItem
@@ -19,7 +19,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     init(store: StatusStore, claudeStore: StatusStore) {
         self.store = store
         self.claudeStore = claudeStore
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         super.init()
 
@@ -39,8 +39,10 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         guard let button = statusItem.button else {
             return
         }
-        button.action = #selector(togglePopover(_:))
+        // Left click refreshes; right click opens the popover.
+        button.action = #selector(handleClick(_:))
         button.target = self
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         setStatusImage(symbolName: currentSymbolName)
         button.imagePosition = .imageOnly
         button.title = ""
@@ -49,18 +51,19 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
     private func configurePopover() {
         popover.behavior = .transient
-        popover.contentSize = Self.popoverSize
         popover.delegate = self
-        popover.contentViewController = NSHostingController(
-            rootView: StatusPopoverView(store: store, claudeStore: claudeStore)
-        )
+        // The popover takes its height from the SwiftUI content, so it is only as tall as needed.
+        let host = NSHostingController(rootView: StatusPopoverView(store: store, claudeStore: claudeStore))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
     }
 
     private func bindStore() {
-        store.objectWillChange
+        store.objectWillChange.merge(with: claudeStore.objectWillChange)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.updateStatusItem()
+                // objectWillChange fires before the new value lands; read it on the next turn.
+                DispatchQueue.main.async { self?.updateStatusItem() }
             }
             .store(in: &cancellables)
     }
@@ -113,7 +116,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         } else if store.stale {
             button.toolTip = "Token Tracker - stale data"
         } else {
-            button.toolTip = "Token Tracker"
+            button.toolTip = MenuBarBars(codex: store.currentSnapshot, claude: claudeStore.currentSnapshot).tooltip
         }
     }
 
@@ -122,8 +125,14 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             return
         }
 
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Token Tracker")
-        image?.isTemplate = true
+        let bars = MenuBarBars(codex: store.currentSnapshot, claude: claudeStore.currentSnapshot)
+        let image: NSImage?
+        if bars.hasAnyValue {
+            image = bars.image()
+        } else {
+            image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Token Tracker")
+            image?.isTemplate = true
+        }
         button.image = image
         applyStatusItemTint()
         button.needsDisplay = true
@@ -167,7 +176,6 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         if !popover.isShown {
             store.refresh()
             claudeStore.refresh()
-            popover.contentSize = constrainedContentSize(for: button)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             framePopoverInsideScreen(relativeTo: button)
             DispatchQueue.main.async { [weak self, weak button] in
@@ -183,25 +191,21 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         scheduleAppearanceRefresh()
     }
 
+    @objc private func handleClick(_ sender: AnyObject?) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            togglePopover(sender)
+        } else {
+            store.refresh()
+            claudeStore.refresh()
+        }
+    }
+
     @objc private func togglePopover(_ sender: AnyObject?) {
         if popover.isShown {
             popover.performClose(sender)
         } else {
             showPopover()
         }
-    }
-
-    private func constrainedContentSize(for button: NSStatusBarButton) -> NSSize {
-        let screen = button.window?.screen ?? NSScreen.main
-        guard let screen else {
-            return Self.popoverSize
-        }
-        let visibleFrame = usableFrame(for: screen)
-
-        return NSSize(
-            width: min(Self.popoverSize.width, max(300, visibleFrame.width - (Self.screenMargin * 2))),
-            height: min(Self.popoverSize.height, max(240, visibleFrame.height - (Self.screenMargin * 2)))
-        )
     }
 
     private func framePopoverInsideScreen(relativeTo button: NSStatusBarButton) {
@@ -258,5 +262,84 @@ private extension LimitWarningLevel {
         case .critical:
             return "a token limit is below 5%"
         }
+    }
+}
+
+/// Menu-bar summary, colored per provider: Codex monthly credits (blue) as one bar + number,
+/// Claude 5h and weekly (orange) as two stacked bars + numbers. Bars fill with the share still
+/// left and numbers are % left, matching the popover. Drawn at display time so the text follows
+/// the menu bar's light/dark appearance.
+struct MenuBarBars {
+    static let codexColor = NSColor(srgbRed: 30 / 255, green: 136 / 255, blue: 229 / 255, alpha: 1)
+    static let claudeColor = NSColor(srgbRed: 217 / 255, green: 119 / 255, blue: 87 / 255, alpha: 1)
+
+    var codexMonthlyLeft: Int?
+    var claudeSessionLeft: Int?
+    var claudeWeeklyLeft: Int?
+
+    init(codex: CodexStatusSnapshot?, claude: CodexStatusSnapshot?) {
+        func left(_ snapshot: CodexStatusSnapshot?, label: String) -> Int? {
+            snapshot?.limits.flatMap(\.windows).first { $0.label == label && $0.showsNumericUsage }?.percentLeft
+        }
+        codexMonthlyLeft = left(codex, label: "Monthly credits")
+        claudeSessionLeft = left(claude, label: "5h limit")
+        claudeWeeklyLeft = left(claude, label: "Weekly limit")
+    }
+
+    var hasAnyValue: Bool {
+        [codexMonthlyLeft, claudeSessionLeft, claudeWeeklyLeft].contains { $0 != nil }
+    }
+
+    var tooltip: String {
+        func text(_ value: Int?) -> String { value.map { "\($0)% left" } ?? "–" }
+        return "Codex monthly \(text(codexMonthlyLeft)) · Claude 5h \(text(claudeSessionLeft)) · weekly \(text(claudeWeeklyLeft))"
+    }
+
+    private static let barWidth: CGFloat = 30
+    private static let numberWidth: CGFloat = 26
+    private static let blockGap: CGFloat = 8
+    private static let height: CGFloat = 18
+
+    func image() -> NSImage {
+        let blockWidth = Self.barWidth + 3 + Self.numberWidth
+        let size = NSSize(width: blockWidth * 2 + Self.blockGap, height: Self.height)
+        let image = NSImage(size: size, flipped: true) { _ in
+            // Codex: one bar, vertically centred, larger number.
+            Self.drawRow(value: codexMonthlyLeft, color: Self.codexColor, x: 0, midY: Self.height / 2,
+                         barHeight: 4, fontSize: 11)
+            // Claude: 5h on top, weekly below.
+            let claudeX = blockWidth + Self.blockGap
+            Self.drawRow(value: claudeSessionLeft, color: Self.claudeColor, x: claudeX, midY: 4.5,
+                         barHeight: 3, fontSize: 8.5)
+            Self.drawRow(value: claudeWeeklyLeft, color: Self.claudeColor, x: claudeX, midY: 13.5,
+                         barHeight: 3, fontSize: 8.5)
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = tooltip
+        return image
+    }
+
+    private static func drawRow(value: Int?, color: NSColor, x: CGFloat, midY: CGFloat, barHeight: CGFloat, fontSize: CGFloat) {
+        let track = NSRect(x: x, y: midY - barHeight / 2, width: barWidth, height: barHeight)
+        NSColor.labelColor.withAlphaComponent(0.2).setFill()
+        NSBezierPath(roundedRect: track, xRadius: barHeight / 2, yRadius: barHeight / 2).fill()
+        if let value, value > 0 {
+            var fill = track
+            fill.size.width = max(barHeight, barWidth * CGFloat(min(value, 100)) / 100)
+            color.setFill()
+            NSBezierPath(roundedRect: fill, xRadius: barHeight / 2, yRadius: barHeight / 2).fill()
+        }
+
+        let text = value.map { "\($0)%" } ?? "–"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: NSColor.labelColor
+        ]
+        let textSize = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(
+            at: NSPoint(x: x + barWidth + 3, y: midY - textSize.height / 2),
+            withAttributes: attributes
+        )
     }
 }
