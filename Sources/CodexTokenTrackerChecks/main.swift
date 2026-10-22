@@ -163,6 +163,8 @@ expect(StatusFormatter.percentLeft(from: 54.4) == 46, "percent left should round
 expect(StatusFormatter.percentLeft(from: 130) == 0, "percent left should clamp low")
 expect(StatusFormatter.windowLabel(minutes: 300, fallback: "5h limit") == "5h limit", "300 minutes should be 5h")
 expect(StatusFormatter.windowLabel(minutes: 10_080, fallback: "Weekly limit") == "Weekly limit", "10080 minutes should be weekly")
+expect(StatusFormatter.windowLabel(minutes: 43_200, fallback: "Weekly limit") == "Monthly limit", "43200 minutes should be monthly")
+expect(StatusFormatter.windowLabel(minutes: 86_400, fallback: "Weekly limit") == "2mo limit", "86400 minutes should be 2 months")
 
 let json = """
 {
@@ -225,10 +227,8 @@ let claudeAdaptiveJSON = """
 let claudeSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
 expect(claudeSnapshot.limits.count == 1, "Claude maps to a single bucket")
 let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
-expect(claudeLabels == ["5h limit", "Weekly limit", "Weekly · Fable"], "limits[] drives windows adaptively, including Fable — got \(claudeLabels)")
+expect(claudeLabels == ["5h limit", "Weekly limit"], "limits[] drives windows adaptively, Fable excluded — got \(claudeLabels)")
 expect(claudeSnapshot.limits[0].windows[0].percentLeft == 89, "session percent left should map from `percent`")
-expect(claudeSnapshot.limits[0].windows[2].percentLeft == 60, "Fable percent left should map from `percent`")
-expect(claudeSnapshot.limits[0].windows[2].resetsAtText != nil, "Fable window should carry a reset time")
 expect(claudeSnapshot.limits[0].creditsText == nil, "disabled spend/extra_usage should show no credits line")
 
 // When `limits[]` is absent, the legacy top-level fields still render (backward compatibility).
@@ -342,15 +342,8 @@ expect(
 
 let popoverSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusPopoverView.swift", encoding: .utf8)
 let statusBarControllerSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusBarController.swift", encoding: .utf8)
-let usageCardIndex = popoverSource.range(of: "UsageStatsCardView(")?.lowerBound
-let exactUsageIndex = popoverSource.range(of: "UsageStatsCardView(title: \"Usage\", stats: onlineTokenStats)")?.lowerBound
-let fallbackUsageIndex = popoverSource.range(of: "UsageStatsCardView(title: \"Estimated device\", stats: localTokenStats)")?.lowerBound
-let limitsIndex = popoverSource.range(of: "if snapshot.limits.isEmpty")?.lowerBound
-expect(exactUsageIndex != nil, "popover should render exact /usage token stats as the primary usage card")
-expect(fallbackUsageIndex != nil, "popover should render local stats only as an estimated device fallback")
-expect(usageCardIndex != nil, "popover should define a single compact usage card")
-expect(limitsIndex != nil, "popover should render codex limits")
-expect(limitsIndex! < usageCardIndex!, "codex limits should render before usage stats")
+expect(popoverSource.contains("CreditCardView(credits: credits)"), "popover should render usage as credits")
+expect(!popoverSource.contains("LimitWindowView") && !popoverSource.contains("% left"), "popover should not render 5h/weekly percentage windows")
 expect(popoverSource.contains(".frame(width: 420, height: 400)"), "popover content should use the widened 420x400 size")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
 expect(!popoverSource.contains(".frame(width: 520)"), "popover content should not use the too-wide 520 point layout")
@@ -359,14 +352,12 @@ expect(popoverSource.contains("ProviderPaneView("), "popover should render Codex
 expect(popoverSource.contains("title: \"Codex\"") && popoverSource.contains("title: \"Claude\""), "popover should label a Codex pane and a Claude pane")
 expect(!popoverSource.contains("TokenStatsComparisonView"), "exact usage should replace the old online/device comparison row")
 expect(!popoverSource.contains("LocalTokenSummaryView"), "device stats should not render beside exact usage")
-if let usageCardRange = popoverSource.range(of: "private struct UsageStatsCardView"),
-   let compactRowRange = popoverSource.range(of: "private struct CompactTokenRow") {
-    let tokenStatsSource = popoverSource[usageCardRange.lowerBound..<compactRowRange.lowerBound]
-    expect(tokenStatsSource.contains("ForEach(stats.periods"), "usage card should render every usage period returned by the stats model")
-    expect(tokenStatsSource.contains("stats.note"), "usage card should surface exact usage freshness/source notes")
-    expect(!tokenStatsSource.contains("ProgressView("), "usage stats should render numbers only, without bars")
+if let cardRange = popoverSource.range(of: "private struct CreditCardView") {
+    let cardSource = popoverSource[cardRange.lowerBound...]
+    expect(cardSource.contains("ForEach(credits.periods"), "credit card should render every period")
+    expect(cardSource.contains("credits.note"), "credit card should name its rate source")
 } else {
-    expect(false, "popover should define compact exact usage card views")
+    expect(false, "popover should define a credit card view")
 }
 expect(!popoverSource.contains("TokenStatsMetricView"), "compact token stats should not render detailed breakdown metrics")
 expect(!popoverSource.contains("Input\""), "compact token stats should hide input breakdown")
@@ -747,5 +738,52 @@ if case let .loaded(snapshot) = await MainActor.run(body: { retryingOnlineUsageS
 }
 let retryingOnlineUsageCalls = await retryingOnlineUsageProvider.callCount()
 expect(retryingOnlineUsageCalls == 2, "online usage error should retry once")
+
+// Credits: rate cards and the Codex session-log pricer.
+let opus55 = ClaudeCreditRates.rate(forModel: "claude-opus-5-5[1m]")
+expect(opus55?.input == 4 && opus55?.cachedInput == 0.20, "Opus 5.5 should not fall back to the Opus 5 prefix")
+expect(ClaudeCreditRates.rate(forModel: "claude-opus-5")?.input == 5, "Opus 5 input rate")
+expect(ClaudeCreditRates.isFable("claude-fable-5-1"), "Fable models are recognized for exclusion")
+let claudeCost = CreditTokenCounts(uncachedInput: 1_000_000, cachedInput: 1_000_000, cacheWrite5m: 1_000_000, cacheWrite1h: 1_000_000, output: 1_000_000)
+    .cost(at: opus55!, multiplier: ClaudeCreditRates.multiplier(speed: "fast"))
+expect(abs(claudeCost - 2 * (4 + 0.20 + 5 + 8 + 20)) < 1e-9, "Claude cost sums every token class, fast mode doubles — got \(claudeCost)")
+
+let creditHome = FileManager.default.temporaryDirectory.appendingPathComponent("credit-check-\(UUID().uuidString)")
+let creditSessions = creditHome.appendingPathComponent("sessions/2026/10/22", isDirectory: true)
+try FileManager.default.createDirectory(at: creditSessions, withIntermediateDirectories: true)
+let creditNow = ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z")!
+let creditLog = [
+    #"{"timestamp":"2026-10-22T10:00:00Z","type":"turn_context","payload":{"model":"gpt-6.1-sol","service_tier":"default"}}"#,
+    #"{"timestamp":"2026-10-22T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{},"last_token_usage":{"input_tokens":1000000,"cached_input_tokens":400000,"output_tokens":100000}}}}"#,
+    #"{"timestamp":"2026-10-22T10:02:00Z","type":"turn_context","payload":{"model":"gpt-6.1-sol","service_tier":"priority"}}"#,
+    #"{"timestamp":"2026-10-22T10:03:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000}}}}"#,
+    #"{"timestamp":"2026-10-22T10:04:00Z","type":"turn_context","payload":{"model":"codex-auto-review"}}"#,
+    #"{"timestamp":"2026-10-22T10:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{},"last_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":20}}}}"#
+].joined(separator: "\n")
+try creditLog.write(to: creditSessions.appendingPathComponent("rollout-check.jsonl"), atomically: true, encoding: .utf8)
+let codexCredits = CodexCreditUsageProvider.load(codexHome: creditHome, now: creditNow)
+// 600k uncached * 50 + 400k cached * 2.5 + 100k out * 250 = 30 + 1 + 25 = 56; then 1M out * 250 * 2.5 = 625.
+expect(abs(codexCredits.periods[0].credits - 681) < 1e-6, "Codex credits should price uncached/cached/output and apply Fast 2.5x — got \(codexCredits.periods[0].credits)")
+expect(codexCredits.unpricedModels == ["codex-auto-review"] && codexCredits.unpricedTokens == 520, "unknown Codex models are reported as unpriced")
+let repeatLog = [
+    #"{"timestamp":"2026-10-22T10:00:00Z","type":"turn_context","payload":{"model":"gpt-6-sol"}}"#,
+    #"{"timestamp":"2026-10-22T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000}}}}"#,
+    #"{"timestamp":"2026-10-22T10:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000}}}}"#
+].joined(separator: "\n")
+try repeatLog.write(to: creditSessions.appendingPathComponent("rollout-check.jsonl"), atomically: true, encoding: .utf8)
+let repeatCredits = CodexCreditUsageProvider.load(codexHome: creditHome, now: creditNow.addingTimeInterval(1))
+expect(abs(repeatCredits.periods[0].credits - 250) < 1e-6, "token_count repeats with an unchanged total are not re-billed — got \(repeatCredits.periods[0].credits)")
+let recordLog = [
+    #"{"timestamp":"2026-10-22T10:00:00Z","type":"turn_context","payload":{"model":"gpt-6-sol"}}"#,
+    #"{"timestamp":"2026-10-22T10:01:00Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000}}}"#,
+    #"{"timestamp":"2026-10-22T10:01:00Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":1000000}}}"#,
+    #"{"timestamp":"2026-10-22T10:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":5000000},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":5000000}}}}"#
+].joined(separator: "\n")
+try recordLog.write(to: creditSessions.appendingPathComponent("rollout-check.jsonl"), atomically: true, encoding: .utf8)
+let recordCredits = CodexCreditUsageProvider.load(codexHome: creditHome, now: creditNow.addingTimeInterval(2))
+expect(abs(recordCredits.periods[0].credits - 250) < 1e-6, "token_usage_record wins over token_count and dedupes by response_id — got \(recordCredits.periods[0].credits)")
+expect(ClaudeCreditRates.rate(forModel: "claude-opus-4-1")?.input == 15 && ClaudeCreditRates.rate(forModel: "claude-opus-4-8")?.input == 5, "Opus 4/4.1 vs 4.5+ rates")
+expect(CreditUnit.codexCredits.format(681) == "681 cr" && CreditUnit.usd.format(12.345) == "$12.35", "credit formatting")
+try? FileManager.default.removeItem(at: creditHome)
 
 print("CodexTokenTracker checks passed")
