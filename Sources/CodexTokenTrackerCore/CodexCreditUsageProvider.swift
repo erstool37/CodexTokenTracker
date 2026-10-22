@@ -12,12 +12,14 @@ public enum CodexCreditUsageProvider {
     private static let cache = FileRecordCache<CreditUsageRecord>()
 
     public static let note = "Codex rate card · this Mac"
+    /// Monthly Codex credit allowance on this account.
+    public static let monthlyAllowance: Double = 7000
 
     public static func load(
         codexHome: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex"),
         now: Date = Date()
     ) -> CreditUsageStats {
-        let cutoff = now.addingTimeInterval(-28 * 24 * 60 * 60)
+        let cutoff = CreditUsageStats.windowStart(now: now)
         let roots = ["sessions", "archived_sessions"].map {
             codexHome.appendingPathComponent($0, isDirectory: true)
         }

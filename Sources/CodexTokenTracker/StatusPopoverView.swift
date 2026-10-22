@@ -163,12 +163,11 @@ private struct SnapshotView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let credits = snapshot.credits {
-                // Codex: usage priced in credits.
-                CreditBucketView(
+                // Codex: credits used this month against the allowance.
+                MonthlyCreditView(
                     credits: credits,
                     statusTexts: snapshot.limits.compactMap(\.statusText)
                 )
-                CreditUsageCardView(credits: credits)
             } else {
                 // Claude: plan limits and token usage.
                 if snapshot.limits.isEmpty {
@@ -450,43 +449,47 @@ private struct CompactTokenRow: View {
     }
 }
 
-/// Where the last 7 days of credits went, one bar per model (bar = share of the week).
-private struct CreditBucketView: View {
+/// Codex: credits used this calendar month against the monthly allowance.
+private struct MonthlyCreditView: View {
     let credits: CreditUsageStats
     let statusTexts: [String]
     @Environment(\.providerAccent) private var accent
 
-    private var weekTotal: Double {
-        credits.weeklyByModel.reduce(0) { $0 + $1.credits }
+    private var allowance: Double { CodexCreditUsageProvider.monthlyAllowance }
+    private var fractionUsed: Double { allowance > 0 ? credits.monthToDate / allowance : 0 }
+    private var warningLevel: LimitWarningLevel {
+        LimitWarningLevel(percentLeft: Int(((1 - fractionUsed) * 100).rounded(.down)))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("7-day credits")
+            Text("Codex")
                 .font(.subheadline.weight(.semibold))
-            if credits.weeklyByModel.isEmpty {
-                Text("No priced usage in the last 7 days.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(credits.weeklyByModel.prefix(4), id: \.model) { share in
-                CreditShareView(
-                    share: share,
-                    unit: credits.unit,
-                    fraction: weekTotal > 0 ? share.credits / weekTotal : 0
-                )
-            }
-            if credits.unpricedTokens > 0 {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Unpriced")
+            VStack(spacing: 3) {
+                HStack {
+                    Text("Monthly credits")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(StatusFormatter.compactTokenCount(credits.unpricedTokens)) tokens")
+                    Text("\(Self.grouped(credits.monthToDate)) / \(Self.grouped(allowance))")
+                        .fontWeight(.semibold)
                         .monospacedDigit()
-                        .help(credits.unpricedModels.joined(separator: ", "))
                 }
-                .font(.caption)
+                UsageBar(fraction: fractionUsed,
+                         color: warningLevel == .normal ? accent : warningLevel.progressColor)
+                    .accessibilityLabel("Monthly credits")
+                    .accessibilityValue("\(Self.grouped(credits.monthToDate)) of \(Self.grouped(allowance)) credits used")
+                if let resetsAtText = StatusFormatter.resetText(secondsSince1970: credits.monthResetsAt?.timeIntervalSince1970) {
+                    HStack {
+                        Spacer()
+                        Text("resets \(resetsAtText)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
             }
+            .font(.caption)
+            .foregroundStyle(warningLevel.textColor)
             ForEach(statusTexts, id: \.self) { statusText in
                 HStack(alignment: .firstTextBaseline) {
                     Text("Status")
@@ -502,76 +505,11 @@ private struct CreditBucketView: View {
         .padding(8)
         .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
-}
 
-private struct CreditShareView: View {
-    let share: CreditModelShare
-    let unit: CreditUnit
-    let fraction: Double
-    @Environment(\.providerAccent) private var accent
-
-    var body: some View {
-        VStack(spacing: 3) {
-            HStack {
-                Text(share.model)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(unit.format(share.credits))
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-            }
-            UsageBar(fraction: fraction, color: accent)
-                .accessibilityLabel(share.model)
-                .accessibilityValue("\(Int((fraction * 100).rounded())) percent of 7-day credits")
-            HStack {
-                Spacer()
-                Text("\(Int((fraction * 100).rounded()))% of week")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-        }
-        .font(.caption)
-    }
-}
-
-private struct CreditUsageCardView: View {
-    let credits: CreditUsageStats
-    @Environment(\.providerAccent) private var accent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Usage")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(accent)
-            ForEach(credits.periods, id: \.label) { period in
-                CompactValueRow(label: period.label, value: credits.unit.format(period.credits))
-            }
-            Text(credits.note)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(5)
-        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct CompactValueRow: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-                .textSelection(.enabled)
-        }
-        .font(.caption2)
+    private static func grouped(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: value.rounded())) ?? "\(Int(value.rounded()))"
     }
 }

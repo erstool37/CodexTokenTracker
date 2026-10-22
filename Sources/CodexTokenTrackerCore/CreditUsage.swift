@@ -119,6 +119,9 @@ public struct CreditUsageStats: Equatable, Sendable {
     public var unpricedModels: [String]
     public var unpricedTokens: Int
     public var note: String
+    /// Credits used since the start of the current calendar month, and when that month ends.
+    public var monthToDate: Double
+    public var monthResetsAt: Date?
 
     public init(
         unit: CreditUnit,
@@ -126,7 +129,9 @@ public struct CreditUsageStats: Equatable, Sendable {
         weeklyByModel: [CreditModelShare],
         unpricedModels: [String] = [],
         unpricedTokens: Int = 0,
-        note: String
+        note: String,
+        monthToDate: Double = 0,
+        monthResetsAt: Date? = nil
     ) {
         self.unit = unit
         self.periods = periods
@@ -134,6 +139,14 @@ public struct CreditUsageStats: Equatable, Sendable {
         self.unpricedModels = unpricedModels
         self.unpricedTokens = unpricedTokens
         self.note = note
+        self.monthToDate = monthToDate
+        self.monthResetsAt = monthResetsAt
+    }
+
+    /// Earliest timestamp `aggregate` needs: the start of the calendar month or 28 days back.
+    public static func windowStart(now: Date, calendar: Calendar = .current) -> Date {
+        let monthStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        return min(monthStart, now.addingTimeInterval(-28 * 24 * 60 * 60))
     }
 
     public static func aggregate(
@@ -146,7 +159,8 @@ public struct CreditUsageStats: Equatable, Sendable {
         let todayStart = calendar.startOfDay(for: now)
         let weekStart = now.addingTimeInterval(-7 * 24 * 60 * 60)
         let monthStart = now.addingTimeInterval(-28 * 24 * 60 * 60)
-        let inMonth = records.filter { $0.timestamp >= monthStart && $0.timestamp <= now }
+        let calendarMonth = calendar.dateInterval(of: .month, for: now)
+        let inMonth = records.filter { $0.timestamp >= windowStart(now: now, calendar: calendar) && $0.timestamp <= now }
 
         func sum(since start: Date) -> Double {
             inMonth.lazy.filter { $0.timestamp >= start }.compactMap(\.credits).reduce(0, +)
@@ -172,7 +186,9 @@ public struct CreditUsageStats: Equatable, Sendable {
                 .sorted { $0.credits > $1.credits },
             unpricedModels: Array(Set(unpriced.map(\.model))).sorted(),
             unpricedTokens: unpriced.reduce(0) { $0 + $1.tokens },
-            note: note
+            note: note,
+            monthToDate: calendarMonth.map { sum(since: $0.start) } ?? 0,
+            monthResetsAt: calendarMonth?.end
         )
     }
 }

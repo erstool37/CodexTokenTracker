@@ -342,7 +342,7 @@ expect(
 
 let popoverSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusPopoverView.swift", encoding: .utf8)
 let statusBarControllerSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusBarController.swift", encoding: .utf8)
-expect(popoverSource.contains("CreditBucketView(") && popoverSource.contains("CreditUsageCardView(credits: credits)"), "popover should render credits in the bucket + usage card layout")
+expect(popoverSource.contains("MonthlyCreditView(") && popoverSource.contains("CodexCreditUsageProvider.monthlyAllowance"), "Codex pane should show monthly credits against the allowance")
 expect(popoverSource.contains("LimitBucketView(bucket: bucket)") && popoverSource.contains("UsageStatsView("), "Claude pane should keep plan limits and token usage")
 expect(popoverSource.contains(".frame(width: 420, height: 400)"), "popover content should use the widened 420x400 size")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
@@ -352,13 +352,7 @@ expect(popoverSource.contains("ProviderPaneView("), "popover should render Codex
 expect(popoverSource.contains("title: \"Codex\"") && popoverSource.contains("title: \"Claude\""), "popover should label a Codex pane and a Claude pane")
 expect(!popoverSource.contains("TokenStatsComparisonView"), "exact usage should replace the old online/device comparison row")
 expect(!popoverSource.contains("LocalTokenSummaryView"), "device stats should not render beside exact usage")
-if let cardRange = popoverSource.range(of: "private struct CreditUsageCardView") {
-    let cardSource = popoverSource[cardRange.lowerBound...]
-    expect(cardSource.contains("ForEach(credits.periods"), "usage card should render every credit period")
-    expect(cardSource.contains("credits.note"), "usage card should name its rate source")
-} else {
-    expect(false, "popover should define a credit usage card view")
-}
+expect(!popoverSource.contains("weeklyByModel"), "Codex pane should not break credits down by model")
 expect(!popoverSource.contains("TokenStatsMetricView"), "compact token stats should not render detailed breakdown metrics")
 expect(!popoverSource.contains("Input\""), "compact token stats should hide input breakdown")
 expect(!popoverSource.contains("Cached\""), "compact token stats should hide cached breakdown")
@@ -784,6 +778,7 @@ let recordCredits = CodexCreditUsageProvider.load(codexHome: creditHome, now: cr
 expect(abs(recordCredits.periods[0].credits - 250) < 1e-6, "token_usage_record wins over token_count and dedupes by response_id — got \(recordCredits.periods[0].credits)")
 expect(ClaudeCreditRates.rate(forModel: "claude-opus-4-1")?.input == 15 && ClaudeCreditRates.rate(forModel: "claude-opus-4-8")?.input == 5, "Opus 4/4.1 vs 4.5+ rates")
 expect(CreditUnit.codexCredits.format(681) == "681 cr" && CreditUnit.usd.format(12.345) == "$12.35", "credit formatting")
+expect(abs(codexCredits.monthToDate - 681) < 1e-6 && codexCredits.monthResetsAt != nil, "month-to-date credits — got \(codexCredits.monthToDate)")
 try? FileManager.default.removeItem(at: creditHome)
 
 print("CodexTokenTracker checks passed")
