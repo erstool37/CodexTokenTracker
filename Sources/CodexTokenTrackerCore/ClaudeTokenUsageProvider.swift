@@ -1,22 +1,14 @@
 import Foundation
 
-/// Reads Claude Code JSONL transcripts from `~/.claude/projects/` and aggregates usage into
-/// today / 7 days / 28 days, both as tokens and as API-rate credits (USD). Fable models are
-/// excluded entirely. Deduplicates assistant responses by `requestId` (falling back to
+/// Reads Claude Code JSONL transcripts from `~/.claude/projects/` and aggregates token usage
+/// into today / 7 days / 28 days. Fable models are excluded entirely. Deduplicates assistant responses by `requestId` (falling back to
 /// `message.id` then top-level `uuid`) across files so that responses replayed across resumed
 /// or forked transcripts are not double-counted. Parsed files are cached by (mtime, size).
 public enum ClaudeTokenUsageProvider {
     private static let cache = FileRecordCache<ClaudeTranscriptRecord>()
 
-    public static let creditNote = "API rates · Fable excluded · this Mac"
-
-    public struct Usage: Sendable {
-        public var tokens: TokenUsageStats
-        public var credits: CreditUsageStats
-    }
-
     /// Entry point. Returns nil when no transcripts or usage are found.
-    public static func load(now: Date = Date()) -> Usage? {
+    public static func load(now: Date = Date()) -> TokenUsageStats? {
         let projectsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude", isDirectory: true)
             .appendingPathComponent("projects", isDirectory: true)
@@ -36,17 +28,7 @@ public enum ClaudeTokenUsageProvider {
             return nil
         }
 
-        return Usage(
-            tokens: stats(from: records, now: now),
-            credits: CreditUsageStats.aggregate(
-                records.map {
-                    CreditUsageRecord(timestamp: $0.timestamp, model: $0.model, credits: $0.credits, tokens: $0.usage.totalTokens)
-                },
-                unit: .usd,
-                note: creditNote,
-                now: now
-            )
-        )
+        return stats(from: records, now: now)
     }
 
     // MARK: - Aggregation
@@ -80,6 +62,11 @@ public enum ClaudeTokenUsageProvider {
 
     // MARK: - Per-file parsing
 
+    /// True for any Claude Fable model id or display name.
+    public static func isFable(_ model: String) -> Bool {
+        model.lowercased().contains("fable")
+    }
+
     static func parseFile(_ fileURL: URL) -> [ClaudeTranscriptRecord] {
         var records: [ClaudeTranscriptRecord] = []
         let decoder = JSONDecoder()
@@ -100,7 +87,7 @@ public enum ClaudeTokenUsageProvider {
 
         let model = raw.message?.model ?? "unknown"
         // Fable usage is not tracked at all.
-        if ClaudeCreditRates.isFable(model) { return nil }
+        if isFable(model) { return nil }
         // Locally synthesized messages (e.g. interrupted turns) are not billed.
         if model == "<synthetic>" { return nil }
 
@@ -118,24 +105,9 @@ public enum ClaudeTokenUsageProvider {
             reasoningOutputTokens: 0
         )
 
-        // Split cache writes by TTL when the breakdown is present; otherwise bill them as 5m writes.
-        let write1h = min(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0, usage.cache_creation_input_tokens)
-        let counts = CreditTokenCounts(
-            uncachedInput: usage.input_tokens,
-            cachedInput: usage.cache_read_input_tokens,
-            cacheWrite5m: usage.cache_creation_input_tokens - write1h,
-            cacheWrite1h: write1h,
-            output: usage.output_tokens
-        )
-        let credits = ClaudeCreditRates.rate(forModel: model).map {
-            counts.cost(at: $0, multiplier: ClaudeCreditRates.multiplier(speed: usage.speed))
-        }
-
         return ClaudeTranscriptRecord(
             timestamp: timestamp,
             usage: breakdown,
-            model: ClaudeCreditRates.normalizedModel(model),
-            credits: credits,
             // API-stable requestId/message.id over local uuid.
             dedupeKey: raw.requestId ?? raw.message?.id ?? raw.uuid
         )
@@ -147,8 +119,6 @@ public enum ClaudeTokenUsageProvider {
 struct ClaudeTranscriptRecord: Sendable {
     var timestamp: Date
     var usage: TokenUsageBreakdownDisplay
-    var model: String
-    var credits: Double?
     var dedupeKey: String?
 }
 
@@ -170,26 +140,17 @@ private struct ClaudeTranscriptMessage: Decodable {
     let usage: ClaudeUsageTokenCounts?
 }
 
-private struct ClaudeCacheCreation: Decodable {
-    let ephemeral_5m_input_tokens: Int?
-    let ephemeral_1h_input_tokens: Int?
-}
-
 private struct ClaudeUsageTokenCounts: Decodable {
     let input_tokens: Int
     let output_tokens: Int
     let cache_creation_input_tokens: Int
     let cache_read_input_tokens: Int
-    let cache_creation: ClaudeCacheCreation?
-    let speed: String?
 
     private enum CodingKeys: String, CodingKey {
         case input_tokens
         case output_tokens
         case cache_creation_input_tokens
         case cache_read_input_tokens
-        case cache_creation
-        case speed
     }
 
     init(from decoder: Decoder) throws {
@@ -198,7 +159,5 @@ private struct ClaudeUsageTokenCounts: Decodable {
         output_tokens = (try? container.decodeIfPresent(Int.self, forKey: .output_tokens)) ?? 0
         cache_creation_input_tokens = (try? container.decodeIfPresent(Int.self, forKey: .cache_creation_input_tokens)) ?? 0
         cache_read_input_tokens = (try? container.decodeIfPresent(Int.self, forKey: .cache_read_input_tokens)) ?? 0
-        cache_creation = try? container.decodeIfPresent(ClaudeCacheCreation.self, forKey: .cache_creation)
-        speed = try? container.decodeIfPresent(String.self, forKey: .speed)
     }
 }

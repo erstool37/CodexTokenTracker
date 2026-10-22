@@ -163,7 +163,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         var snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: fetchedAt)
 
         // Aggregate local Claude Code transcripts (Fable excluded) and surface as the usage card.
-        snapshot.onlineTokenStats = ClaudeTokenUsageProvider.load(now: fetchedAt)?.tokens
+        snapshot.onlineTokenStats = ClaudeTokenUsageProvider.load(now: fetchedAt)
 
         if snapshot.limits.isEmpty {
             throw ClaudeUsageError.emptyShape(body: body)
@@ -181,7 +181,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// `refreshedAt` is intentionally left untouched so the popover renders it as stale data.
     private func withFreshLocalStats(_ snapshot: CodexStatusSnapshot) -> CodexStatusSnapshot {
         var copy = snapshot
-        copy.onlineTokenStats = ClaudeTokenUsageProvider.load(now: Date())?.tokens
+        copy.onlineTokenStats = ClaudeTokenUsageProvider.load(now: Date())
         return copy
     }
 
@@ -396,7 +396,7 @@ public enum ClaudeUsageMapper {
             guard let usedPercent = limit.usedPercent else { return nil }
             let model = limit.scope?.model?.display_name
             // Fable usage is deliberately not surfaced.
-            if let model, ClaudeCreditRates.isFable(model) { return nil }
+            if let model, ClaudeTokenUsageProvider.isFable(model) { return nil }
             let idParts = ["claude", limit.kind ?? limit.group, model]
                 .compactMap { $0 }
                 .map { $0.replacingOccurrences(of: " ", with: "-").lowercased() }

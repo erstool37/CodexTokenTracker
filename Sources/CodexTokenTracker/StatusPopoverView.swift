@@ -162,30 +162,21 @@ private struct SnapshotView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let credits = snapshot.credits {
-                // Codex: credits used this month against the allowance.
-                MonthlyCreditView(
-                    credits: credits,
-                    statusTexts: snapshot.limits.compactMap(\.statusText)
-                )
+            if snapshot.limits.isEmpty {
+                Text("No rate-limit data returned.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                // Claude: plan limits and token usage.
-                if snapshot.limits.isEmpty {
-                    Text("No rate-limit data returned.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(snapshot.limits) { bucket in
-                        LimitBucketView(bucket: bucket)
-                    }
+                ForEach(snapshot.limits) { bucket in
+                    LimitBucketView(bucket: bucket)
                 }
-                if snapshot.onlineTokenStats != nil || snapshot.onlineTokenStatsError != nil || snapshot.tokenStats != nil {
-                    UsageStatsView(
-                        onlineTokenStats: snapshot.onlineTokenStats,
-                        onlineUnavailable: snapshot.onlineTokenStatsError != nil,
-                        localTokenStats: snapshot.tokenStats
-                    )
-                }
+            }
+            if snapshot.onlineTokenStats != nil || snapshot.onlineTokenStatsError != nil || snapshot.tokenStats != nil {
+                UsageStatsView(
+                    onlineTokenStats: snapshot.onlineTokenStats,
+                    onlineUnavailable: snapshot.onlineTokenStatsError != nil,
+                    localTokenStats: snapshot.tokenStats
+                )
             }
             freshness
         }
@@ -446,70 +437,5 @@ private struct CompactTokenRow: View {
                 .textSelection(.enabled)
         }
         .font(.caption2)
-    }
-}
-
-/// Codex: credits used this calendar month against the monthly allowance.
-private struct MonthlyCreditView: View {
-    let credits: CreditUsageStats
-    let statusTexts: [String]
-    @Environment(\.providerAccent) private var accent
-
-    private var allowance: Double { CodexCreditUsageProvider.monthlyAllowance }
-    private var fractionUsed: Double { allowance > 0 ? credits.monthToDate / allowance : 0 }
-    private var warningLevel: LimitWarningLevel {
-        LimitWarningLevel(percentLeft: Int(((1 - fractionUsed) * 100).rounded(.down)))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Codex")
-                .font(.subheadline.weight(.semibold))
-            VStack(spacing: 3) {
-                HStack {
-                    Text("Monthly credits")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(Self.grouped(credits.monthToDate)) / \(Self.grouped(allowance))")
-                        .fontWeight(.semibold)
-                        .monospacedDigit()
-                }
-                UsageBar(fraction: fractionUsed,
-                         color: warningLevel == .normal ? accent : warningLevel.progressColor)
-                    .accessibilityLabel("Monthly credits")
-                    .accessibilityValue("\(Self.grouped(credits.monthToDate)) of \(Self.grouped(allowance)) credits used")
-                if let resetsAtText = StatusFormatter.resetText(secondsSince1970: credits.monthResetsAt?.timeIntervalSince1970) {
-                    HStack {
-                        Spacer()
-                        Text("resets \(resetsAtText)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(warningLevel.textColor)
-            ForEach(statusTexts, id: \.self) { statusText in
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Status")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(statusText)
-                        .multilineTextAlignment(.trailing)
-                        .textSelection(.enabled)
-                }
-                .font(.caption)
-            }
-        }
-        .padding(8)
-        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private static func grouped(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 0
-        return formatter.string(from: NSNumber(value: value.rounded())) ?? "\(Int(value.rounded()))"
     }
 }

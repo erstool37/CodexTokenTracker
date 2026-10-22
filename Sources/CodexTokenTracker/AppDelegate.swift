@@ -3,7 +3,8 @@ import CodexTokenTrackerCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let store = StatusStore()
+    // Codex shows only its monthly credit allowance, so no local token-stats fallback either.
+    private let store = StatusStore(tokenStatsLoader: { _, _ in nil })
     // No fast 5s/20s retries for Claude: the usage endpoint answers rate-limits with a long
     // Retry-After, so quick retries only re-trip it. Cadence is the provider's throttle plus the
     // store's 10-minute ticker; the provider serves cached data in between.

@@ -6,8 +6,6 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
     public var onlineTokenStats: TokenUsageStats?
     public var onlineTokenStatsError: String?
     public var tokenStats: TokenUsageStats?
-    /// Usage priced in the provider's credit unit (Codex credits / Claude API USD).
-    public var credits: CreditUsageStats?
     public var refreshedAt: Date
     public var source: String
 
@@ -17,7 +15,6 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
         onlineTokenStats: TokenUsageStats? = nil,
         onlineTokenStatsError: String? = nil,
         tokenStats: TokenUsageStats? = nil,
-        credits: CreditUsageStats? = nil,
         refreshedAt: Date,
         source: String = "codex app-server"
     ) {
@@ -26,7 +23,6 @@ public struct CodexStatusSnapshot: Equatable, Sendable {
         self.onlineTokenStats = onlineTokenStats
         self.onlineTokenStatsError = onlineTokenStatsError
         self.tokenStats = tokenStats
-        self.credits = credits
         self.refreshedAt = refreshedAt
         self.source = source
     }
