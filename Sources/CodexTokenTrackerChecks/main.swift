@@ -342,8 +342,8 @@ expect(
 
 let popoverSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusPopoverView.swift", encoding: .utf8)
 let statusBarControllerSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusBarController.swift", encoding: .utf8)
-expect(popoverSource.contains("CreditCardView(credits: credits)"), "popover should render usage as credits")
-expect(!popoverSource.contains("LimitWindowView") && !popoverSource.contains("% left"), "popover should not render 5h/weekly percentage windows")
+expect(popoverSource.contains("CreditBucketView(") && popoverSource.contains("CreditUsageCardView(credits: credits)"), "popover should render credits in the bucket + usage card layout")
+expect(!popoverSource.contains("% left"), "popover should not render 5h/weekly percentage windows")
 expect(popoverSource.contains(".frame(width: 420, height: 400)"), "popover content should use the widened 420x400 size")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
 expect(!popoverSource.contains(".frame(width: 520)"), "popover content should not use the too-wide 520 point layout")
@@ -352,12 +352,12 @@ expect(popoverSource.contains("ProviderPaneView("), "popover should render Codex
 expect(popoverSource.contains("title: \"Codex\"") && popoverSource.contains("title: \"Claude\""), "popover should label a Codex pane and a Claude pane")
 expect(!popoverSource.contains("TokenStatsComparisonView"), "exact usage should replace the old online/device comparison row")
 expect(!popoverSource.contains("LocalTokenSummaryView"), "device stats should not render beside exact usage")
-if let cardRange = popoverSource.range(of: "private struct CreditCardView") {
+if let cardRange = popoverSource.range(of: "private struct CreditUsageCardView") {
     let cardSource = popoverSource[cardRange.lowerBound...]
-    expect(cardSource.contains("ForEach(credits.periods"), "credit card should render every period")
-    expect(cardSource.contains("credits.note"), "credit card should name its rate source")
+    expect(cardSource.contains("ForEach(credits.periods"), "usage card should render every credit period")
+    expect(cardSource.contains("credits.note"), "usage card should name its rate source")
 } else {
-    expect(false, "popover should define a credit card view")
+    expect(false, "popover should define a credit usage card view")
 }
 expect(!popoverSource.contains("TokenStatsMetricView"), "compact token stats should not render detailed breakdown metrics")
 expect(!popoverSource.contains("Input\""), "compact token stats should hide input breakdown")

@@ -163,16 +163,15 @@ private struct SnapshotView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let credits = snapshot.credits {
-                CreditCardView(credits: credits)
+                CreditBucketView(
+                    credits: credits,
+                    statusTexts: snapshot.limits.compactMap(\.statusText)
+                )
+                CreditUsageCardView(credits: credits)
             } else {
                 Text("No local usage logs found.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            ForEach(snapshot.limits.compactMap(\.statusText), id: \.self) { statusText in
-                Label(statusText, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
             }
             freshness
         }
@@ -191,58 +190,150 @@ private struct SnapshotView: View {
     }
 }
 
-/// Usage priced in the provider's credit unit: period totals, then where the last 7 days went.
-private struct CreditCardView: View {
+/// Where the last 7 days of credits went, one bar per model (bar = share of the week).
+private struct CreditBucketView: View {
+    let credits: CreditUsageStats
+    let statusTexts: [String]
+    @Environment(\.providerAccent) private var accent
+
+    private var weekTotal: Double {
+        credits.weeklyByModel.reduce(0) { $0 + $1.credits }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("7-day credits")
+                .font(.subheadline.weight(.semibold))
+            if credits.weeklyByModel.isEmpty {
+                Text("No priced usage in the last 7 days.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(credits.weeklyByModel.prefix(4), id: \.model) { share in
+                CreditShareView(
+                    share: share,
+                    unit: credits.unit,
+                    fraction: weekTotal > 0 ? share.credits / weekTotal : 0
+                )
+            }
+            if credits.unpricedTokens > 0 {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Unpriced")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(StatusFormatter.compactTokenCount(credits.unpricedTokens)) tokens")
+                        .monospacedDigit()
+                        .help(credits.unpricedModels.joined(separator: ", "))
+                }
+                .font(.caption)
+            }
+            ForEach(statusTexts, id: \.self) { statusText in
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Status")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(statusText)
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                }
+                .font(.caption)
+            }
+        }
+        .padding(8)
+        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// A linear usage bar drawn from capsules so its fill color is always honored.
+/// The system `ProgressView(.linear)` ignores `.tint` on macOS and falls back to
+/// the system accent (blue), which made the Claude pane's bars render blue.
+private struct UsageBar: View {
+    /// Filled fraction, 0...1.
+    let fraction: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.2))
+                Capsule()
+                    .fill(color)
+                    .frame(width: min(max(fraction, 0), 1) * geo.size.width)
+            }
+        }
+        .frame(height: 6)
+    }
+}
+
+private struct CreditShareView: View {
+    let share: CreditModelShare
+    let unit: CreditUnit
+    let fraction: Double
+    @Environment(\.providerAccent) private var accent
+
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack {
+                Text(share.model)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(unit.format(share.credits))
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+            }
+            UsageBar(fraction: fraction, color: accent)
+                .accessibilityLabel(share.model)
+                .accessibilityValue("\(Int((fraction * 100).rounded())) percent of 7-day credits")
+            HStack {
+                Spacer()
+                Text("\(Int((fraction * 100).rounded()))% of week")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .font(.caption)
+    }
+}
+
+private struct CreditUsageCardView: View {
     let credits: CreditUsageStats
     @Environment(\.providerAccent) private var accent
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(credits.unit == .usd ? "Credits (USD)" : "Credits")
+            Text("Usage")
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
             ForEach(credits.periods, id: \.label) { period in
-                HStack(alignment: .firstTextBaseline) {
-                    Text(period.label)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(credits.unit.format(period.credits))
-                        .fontWeight(.semibold)
-                        .monospacedDigit()
-                        .textSelection(.enabled)
-                }
-                .font(.caption)
-            }
-
-            if !credits.weeklyByModel.isEmpty {
-                Divider()
-                Text("7 days by model")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                ForEach(credits.weeklyByModel.prefix(4), id: \.model) { share in
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(share.model)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(credits.unit.format(share.credits))
-                            .monospacedDigit()
-                    }
-                    .font(.caption2)
-                }
-            }
-
-            if credits.unpricedTokens > 0 {
-                Text("Unpriced: \(StatusFormatter.compactTokenCount(credits.unpricedTokens)) tokens (\(credits.unpricedModels.joined(separator: ", ")))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                CompactValueRow(label: period.label, value: credits.unit.format(period.credits))
             }
             Text(credits.note)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
         }
-        .padding(8)
+        .padding(5)
         .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct CompactValueRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+                .textSelection(.enabled)
+        }
+        .font(.caption2)
     }
 }
