@@ -163,15 +163,30 @@ private struct SnapshotView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let credits = snapshot.credits {
+                // Codex: usage priced in credits.
                 CreditBucketView(
                     credits: credits,
                     statusTexts: snapshot.limits.compactMap(\.statusText)
                 )
                 CreditUsageCardView(credits: credits)
             } else {
-                Text("No local usage logs found.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // Claude: plan limits and token usage.
+                if snapshot.limits.isEmpty {
+                    Text("No rate-limit data returned.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(snapshot.limits) { bucket in
+                        LimitBucketView(bucket: bucket)
+                    }
+                }
+                if snapshot.onlineTokenStats != nil || snapshot.onlineTokenStatsError != nil || snapshot.tokenStats != nil {
+                    UsageStatsView(
+                        onlineTokenStats: snapshot.onlineTokenStats,
+                        onlineUnavailable: snapshot.onlineTokenStatsError != nil,
+                        localTokenStats: snapshot.tokenStats
+                    )
+                }
             }
             freshness
         }
@@ -187,6 +202,251 @@ private struct SnapshotView: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(stale ? .orange : .secondary)
         }
+    }
+}
+
+private struct LimitBucketView: View {
+    let bucket: LimitBucketDisplay
+    @Environment(\.providerAccent) private var accent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(bucket.label)
+                .font(.subheadline.weight(.semibold))
+            ForEach(bucket.windows) { window in
+                LimitWindowView(window: window)
+            }
+            if let creditsText = bucket.creditsText {
+                HStack {
+                    Text("Credits")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(creditsText)
+                        .monospacedDigit()
+                        .textSelection(.enabled)
+                }
+                .font(.caption)
+            }
+            if let statusText = bucket.statusText {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Status")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(statusText)
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                }
+                .font(.caption)
+            }
+        }
+        .padding(8)
+        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// A linear usage bar drawn from capsules so its fill color is always honored.
+/// The system `ProgressView(.linear)` ignores `.tint` on macOS and falls back to
+/// the system accent (blue), which made the Claude pane's bars render blue.
+private struct UsageBar: View {
+    /// Filled fraction, 0...1.
+    let fraction: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.2))
+                Capsule()
+                    .fill(color)
+                    .frame(width: min(max(fraction, 0), 1) * geo.size.width)
+            }
+        }
+        .frame(height: 6)
+    }
+}
+
+private struct LimitWindowView: View {
+    let window: LimitWindowDisplay
+    @Environment(\.providerAccent) private var accent
+
+    var body: some View {
+        if window.showsNumericUsage {
+            VStack(spacing: 3) {
+                HStack {
+                    Text(window.label)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(window.percentLeft)% left")
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                }
+                UsageBar(fraction: Double(window.percentLeft) / 100,
+                         color: window.warningLevel == .normal ? accent : window.warningLevel.progressColor)
+                    .accessibilityLabel(window.label)
+                    .accessibilityValue("\(window.percentLeft) percent left")
+                if let resetsAtText = window.resetsAtText {
+                    HStack {
+                        Spacer()
+                        Text("resets \(resetsAtText)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(window.warningLevel.textColor)
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: iconName)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(iconColor)
+                    .accessibilityLabel(window.label)
+                Text(window.label)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let resetsAtText = window.resetsAtText {
+                    Text("resets \(resetsAtText)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    private var iconName: String {
+        switch window.percentLeft {
+        case 50...100:
+            return "checkmark.circle"
+        case 1..<50:
+            return "exclamationmark.triangle"
+        default:
+            return "xmark.circle"
+        }
+    }
+
+    private var iconColor: Color {
+        switch window.percentLeft {
+        case 50...100:
+            return .secondary
+        case 1..<50:
+            return .orange
+        default:
+            return .red
+        }
+    }
+}
+
+private extension LimitWarningLevel {
+    var progressColor: Color {
+        switch self {
+        case .normal:
+            return .accentColor
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        }
+    }
+
+    var textColor: Color {
+        switch self {
+        case .normal:
+            return .primary
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        }
+    }
+}
+
+private struct UsageStatsView: View {
+    let onlineTokenStats: TokenUsageStats?
+    let onlineUnavailable: Bool
+    let localTokenStats: TokenUsageStats?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let onlineTokenStats {
+                UsageStatsCardView(title: "Usage", stats: onlineTokenStats)
+            } else {
+                if onlineUnavailable {
+                    ExactUsageUnavailableView()
+                }
+                if let localTokenStats {
+                    UsageStatsCardView(title: "Estimated device", stats: localTokenStats)
+                }
+            }
+        }
+    }
+}
+
+private struct ExactUsageUnavailableView: View {
+    @Environment(\.providerAccent) private var accent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Usage")
+                .font(.subheadline.weight(.semibold))
+            HStack(alignment: .firstTextBaseline) {
+                Text("Status")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Exact usage unavailable")
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
+        .padding(5)
+        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct UsageStatsCardView: View {
+    let title: String
+    let stats: TokenUsageStats
+    @Environment(\.providerAccent) private var accent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
+            ForEach(stats.periods, id: \.label) { period in
+                CompactTokenRow(label: period.label, tokens: period.usage.totalTokens)
+            }
+            if let note = stats.note {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(5)
+        .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct CompactTokenRow: View {
+    let label: String
+    let tokens: Int
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(StatusFormatter.compactTokenCount(tokens))
+                .fontWeight(.semibold)
+                .monospacedDigit()
+                .textSelection(.enabled)
+        }
+        .font(.caption2)
     }
 }
 
@@ -241,28 +501,6 @@ private struct CreditBucketView: View {
         }
         .padding(8)
         .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-/// A linear usage bar drawn from capsules so its fill color is always honored.
-/// The system `ProgressView(.linear)` ignores `.tint` on macOS and falls back to
-/// the system accent (blue), which made the Claude pane's bars render blue.
-private struct UsageBar: View {
-    /// Filled fraction, 0...1.
-    let fraction: Double
-    let color: Color
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.2))
-                Capsule()
-                    .fill(color)
-                    .frame(width: min(max(fraction, 0), 1) * geo.size.width)
-            }
-        }
-        .frame(height: 6)
     }
 }
 

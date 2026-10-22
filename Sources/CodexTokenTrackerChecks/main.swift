@@ -343,7 +343,7 @@ expect(
 let popoverSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusPopoverView.swift", encoding: .utf8)
 let statusBarControllerSource = try String(contentsOfFile: "Sources/CodexTokenTracker/StatusBarController.swift", encoding: .utf8)
 expect(popoverSource.contains("CreditBucketView(") && popoverSource.contains("CreditUsageCardView(credits: credits)"), "popover should render credits in the bucket + usage card layout")
-expect(!popoverSource.contains("% left"), "popover should not render 5h/weekly percentage windows")
+expect(popoverSource.contains("LimitBucketView(bucket: bucket)") && popoverSource.contains("UsageStatsView("), "Claude pane should keep plan limits and token usage")
 expect(popoverSource.contains(".frame(width: 420, height: 400)"), "popover content should use the widened 420x400 size")
 expect(!popoverSource.contains(".frame(width: 380)"), "popover content should not use the wider 380 point layout")
 expect(!popoverSource.contains(".frame(width: 520)"), "popover content should not use the too-wide 520 point layout")

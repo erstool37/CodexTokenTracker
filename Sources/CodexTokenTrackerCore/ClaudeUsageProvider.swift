@@ -162,10 +162,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         let fetchedAt = Date()
         var snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: fetchedAt)
 
-        // Aggregate local Claude Code transcripts (Fable excluded) into tokens and credits.
-        let localUsage = ClaudeTokenUsageProvider.load(now: fetchedAt)
-        snapshot.onlineTokenStats = localUsage?.tokens
-        snapshot.credits = localUsage?.credits
+        // Aggregate local Claude Code transcripts (Fable excluded) and surface as the usage card.
+        snapshot.onlineTokenStats = ClaudeTokenUsageProvider.load(now: fetchedAt)?.tokens
 
         if snapshot.limits.isEmpty {
             throw ClaudeUsageError.emptyShape(body: body)
@@ -183,9 +181,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     /// `refreshedAt` is intentionally left untouched so the popover renders it as stale data.
     private func withFreshLocalStats(_ snapshot: CodexStatusSnapshot) -> CodexStatusSnapshot {
         var copy = snapshot
-        let localUsage = ClaudeTokenUsageProvider.load(now: Date())
-        copy.onlineTokenStats = localUsage?.tokens
-        copy.credits = localUsage?.credits
+        copy.onlineTokenStats = ClaudeTokenUsageProvider.load(now: Date())?.tokens
         return copy
     }
 
