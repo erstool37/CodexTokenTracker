@@ -319,18 +319,19 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
             lastServiceScan.map { now.timeIntervalSince($0) >= serviceScanInterval } ?? true
         }
         if needsScan {
-            let services = ClaudeKeychain.credentialServices()
+            let sources = ClaudeKeychain.credentialSources()
+            let ids = Set(sources.map(\.id))
             lock.withLock {
                 lastServiceScan = now
-                for service in services where providers[service] == nil {
-                    providers[service] = ClaudeUsageProvider(service: service, session: session)
+                for source in sources where providers[source.id] == nil {
+                    providers[source.id] = ClaudeUsageProvider(source: source, session: session)
                 }
-                for service in providers.keys where !services.contains(service) {
-                    providers[service] = nil
+                for id in providers.keys where !ids.contains(id) {
+                    providers[id] = nil
                 }
             }
         }
-        return lock.withLock { providers.values.sorted { $0.service < $1.service } }
+        return lock.withLock { providers.values.sorted { $0.source.id < $1.source.id } }
     }
 
     private func localEntry(for provider: ClaudeUsageProvider, now: Date) async -> (ClaudeAccountEntry?, Error?) {
@@ -361,9 +362,9 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     /// The organization behind a login, from `/api/oauth/profile`, cached on disk per login and
     /// re-read every few hours or when Claude Code's recorded plan changes (a re-login).
     private func identity(for provider: ClaudeUsageProvider, now: Date) async -> ClaudeAccountIdentity? {
-        let service = provider.service
+        let service = provider.source.id
         let token = try? provider.readToken()
-        let cached = lock.withLock { identities[service] } ?? loadIdentity(service: service)
+        let cached = lock.withLock { identities[service] } ?? loadIdentity(source: provider.source)
         if let cached,
            now.timeIntervalSince1970 - cached.fetchedAt < identityRefreshInterval,
            token == nil || token?.subscriptionType == cached.identity.subscriptionType {
@@ -373,7 +374,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
         if let token, let fetched = await fetchProfile(token: token) {
             let entry = CachedIdentity(identity: fetched, fetchedAt: now.timeIntervalSince1970)
             lock.withLock { identities[service] = entry }
-            saveIdentity(entry, service: service)
+            saveIdentity(entry, source: provider.source)
             return fetched
         }
         if let cached { return cached.identity }
@@ -426,7 +427,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
 
     private func publish(now: Date, providers: [ClaudeUsageProvider]) {
         let accounts = providers.compactMap { provider -> ClaudePublishedAccounts.Account? in
-            guard let identity = lock.withLock({ identities[provider.service]?.identity }),
+            guard let identity = lock.withLock({ identities[provider.source.id]?.identity }),
                   let payload = provider.lastGoodPayload(),
                   let usage = String(data: payload.data, encoding: .utf8) else {
                 return nil
@@ -559,21 +560,21 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
 
     // MARK: Files
 
-    private func identityURL(service: String) -> URL {
-        let name = ClaudeUsageProvider.lastGoodFileName(service: service)
+    private func identityURL(source: ClaudeCredentialSource) -> URL {
+        let name = ClaudeUsageProvider.lastGoodFileName(source: source)
             .replacingOccurrences(of: "claude-usage", with: "claude-profile")
         return supportDirectory.appendingPathComponent(name)
     }
 
-    private func loadIdentity(service: String) -> CachedIdentity? {
-        guard let data = try? Data(contentsOf: identityURL(service: service)) else { return nil }
+    private func loadIdentity(source: ClaudeCredentialSource) -> CachedIdentity? {
+        guard let data = try? Data(contentsOf: identityURL(source: source)) else { return nil }
         return try? JSONDecoder().decode(CachedIdentity.self, from: data)
     }
 
-    private func saveIdentity(_ identity: CachedIdentity, service: String) {
+    private func saveIdentity(_ identity: CachedIdentity, source: ClaudeCredentialSource) {
         guard let data = try? JSONEncoder().encode(identity) else { return }
         try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
-        try? data.write(to: identityURL(service: service), options: .atomic)
+        try? data.write(to: identityURL(source: source), options: .atomic)
     }
 
     private static func loadOrCreateMachineID(in directory: URL) -> String {

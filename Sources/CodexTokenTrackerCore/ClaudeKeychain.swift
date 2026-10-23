@@ -45,6 +45,22 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
 /// *this* app is rebuilt. Reading through it therefore decouples our access from our
 /// own (per-build) code identity and stops the repeated prompts. The secret is returned
 /// on `security`'s stdout, never via argv, so it is not exposed in the process list.
+/// Where one Claude Code login keeps its OAuth credentials.
+public enum ClaudeCredentialSource: Hashable, Sendable {
+    case keychain(service: String)
+    case file(path: String)
+
+    /// Stable key for caches and file names.
+    public var id: String {
+        switch self {
+        case let .keychain(service):
+            return service
+        case let .file(path):
+            return "file:\(path)"
+        }
+    }
+}
+
 public enum ClaudeKeychain {
     public static let defaultService = "Claude Code-credentials"
 
@@ -68,8 +84,37 @@ public enum ClaudeKeychain {
         service: String = defaultService,
         account: String = NSUserName()
     ) throws -> Token {
-        let data = try copySecret(service: service, account: account)
+        try decodeToken(copySecret(service: service, account: account))
+    }
 
+    public static func readAccessToken(from source: ClaudeCredentialSource) throws -> Token {
+        switch source {
+        case let .keychain(service):
+            return try readAccessToken(service: service)
+        case let .file(path):
+            guard let data = FileManager.default.contents(atPath: path) else {
+                throw ClaudeKeychainError.notSignedIn
+            }
+            return try decodeToken(data)
+        }
+    }
+
+    /// Every Claude Code login on this Mac: keychain items (see `credentialServices()`) plus the
+    /// plaintext `.credentials.json` Claude Code writes in its config dir when the keychain is
+    /// locked — e.g. after `/login` over SSH. Config dirs are `~/.claude` and `~/.claude-*`.
+    public static func credentialSources(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [ClaudeCredentialSource] {
+        var sources = credentialServices().map(ClaudeCredentialSource.keychain)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? []
+        for name in names.sorted() where name == ".claude" || name.hasPrefix(".claude-") {
+            let path = home.appendingPathComponent(name).appendingPathComponent(".credentials.json").path
+            if FileManager.default.fileExists(atPath: path) {
+                sources.append(.file(path: path))
+            }
+        }
+        return sources
+    }
+
+    private static func decodeToken(_ data: Data) throws -> Token {
         guard
             let stored = try? JSONDecoder().decode(Stored.self, from: data),
             let token = stored.claudeAiOauth?.accessToken,

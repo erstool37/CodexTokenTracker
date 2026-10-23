@@ -38,8 +38,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     )
     private let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private let session: URLSession
-    /// Keychain service of the login this provider reads (`Claude Code-credentials[-xxxxxxxx]`).
-    public let service: String
+    /// The Claude Code login this provider reads (keychain item or `.credentials.json`).
+    public let source: ClaudeCredentialSource
 
     // The `/api/oauth/usage` endpoint enforces a strict per-account rate limit and answers a
     // 429 with a large `Retry-After` (often ~an hour). The store calls `refresh()` on launch,
@@ -70,13 +70,13 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     private let lastGood: LastGoodPayloadStore
 
     public init(
-        service: String = ClaudeKeychain.defaultService,
+        source: ClaudeCredentialSource = .keychain(service: ClaudeKeychain.defaultService),
         session: URLSession = .shared,
         lastGood: LastGoodPayloadStore? = nil
     ) {
-        self.service = service
+        self.source = source
         self.session = session
-        self.lastGood = lastGood ?? LastGoodPayloadStore(fileName: Self.lastGoodFileName(service: service))
+        self.lastGood = lastGood ?? LastGoodPayloadStore(fileName: Self.lastGoodFileName(source: source))
         if let saved = self.lastGood.load(),
            let snapshot = try? ClaudeUsageMapper.snapshot(fromJSON: saved.data, now: saved.savedAt),
            !snapshot.limits.isEmpty {
@@ -84,12 +84,20 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         }
     }
 
-    /// `claude-usage.json` for the default login (the file earlier builds wrote), and
-    /// `claude-usage-<suffix>.json` for each `CLAUDE_CONFIG_DIR` login.
-    static func lastGoodFileName(service: String) -> String {
-        let suffix = service.hasPrefix(ClaudeKeychain.defaultService)
-            ? String(service.dropFirst(ClaudeKeychain.defaultService.count))
-            : "-" + service.replacingOccurrences(of: " ", with: "-")
+    /// `claude-usage.json` for the default keychain login (the file earlier builds wrote),
+    /// `claude-usage-<suffix>.json` for each `CLAUDE_CONFIG_DIR` keychain login, and
+    /// `claude-usage-file-<config dir>.json` for a `.credentials.json` login.
+    static func lastGoodFileName(source: ClaudeCredentialSource) -> String {
+        let suffix: String
+        switch source {
+        case let .keychain(service):
+            suffix = service.hasPrefix(ClaudeKeychain.defaultService)
+                ? String(service.dropFirst(ClaudeKeychain.defaultService.count))
+                : "-" + service.replacingOccurrences(of: " ", with: "-")
+        case let .file(path):
+            let configDir = URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
+            suffix = "-file-" + configDir.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
+        }
         return "claude-usage\(suffix).json"
     }
 
@@ -98,9 +106,9 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         lastGood.load()
     }
 
-    /// Current access token and plan of this login, read fresh from the keychain.
+    /// Current access token and plan of this login, read fresh each time.
     public func readToken() throws -> ClaudeKeychain.Token {
-        try ClaudeKeychain.readAccessToken(service: service)
+        try ClaudeKeychain.readAccessToken(from: source)
     }
 
     private enum FetchDecision {
