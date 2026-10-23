@@ -27,9 +27,10 @@ public enum ClaudeUsageError: Error, LocalizedError, Sendable {
     }
 }
 
-/// Fetches live Claude usage from the Anthropic OAuth usage endpoint and maps it onto the
-/// shared `CodexStatusSnapshot` model so the popover can render it with the same views the
-/// Codex pane uses. There is no local fallback — this is API-only by design.
+/// Fetches live Claude usage for one Claude Code login (one keychain credential item) from the
+/// Anthropic OAuth usage endpoint and maps it onto the shared `CodexStatusSnapshot` model.
+/// There is no local fallback — this is API-only by design. `ClaudeAccountsProvider` runs one of
+/// these per login and merges them with the other Mac's.
 public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     private static let log = Logger(
         subsystem: "com.erstool37.CodexTokenTracker",
@@ -37,6 +38,8 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
     )
     private let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private let session: URLSession
+    /// Keychain service of the login this provider reads (`Claude Code-credentials[-xxxxxxxx]`).
+    public let service: String
 
     // The `/api/oauth/usage` endpoint enforces a strict per-account rate limit and answers a
     // 429 with a large `Retry-After` (often ~an hour). The store calls `refresh()` on launch,
@@ -65,23 +68,39 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
 
     /// Last good payload on disk, so the last known values survive failed calls and restarts.
     private let lastGood: LastGoodPayloadStore
-    /// Local transcript totals. The first scan reads every transcript from the last 28 days
-    /// (gigabytes), so it runs in the background and never delays the plan limits; refreshes
-    /// show the latest finished result.
-    private var latestLocalStats: TokenUsageStats?
-    private var localStatsTask: Task<Void, Never>?
 
     public init(
+        service: String = ClaudeKeychain.defaultService,
         session: URLSession = .shared,
-        lastGood: LastGoodPayloadStore = LastGoodPayloadStore(fileName: "claude-usage.json")
+        lastGood: LastGoodPayloadStore? = nil
     ) {
+        self.service = service
         self.session = session
-        self.lastGood = lastGood
-        if let saved = lastGood.load(),
+        self.lastGood = lastGood ?? LastGoodPayloadStore(fileName: Self.lastGoodFileName(service: service))
+        if let saved = self.lastGood.load(),
            let snapshot = try? ClaudeUsageMapper.snapshot(fromJSON: saved.data, now: saved.savedAt),
            !snapshot.limits.isEmpty {
             cachedSnapshot = snapshot
         }
+    }
+
+    /// `claude-usage.json` for the default login (the file earlier builds wrote), and
+    /// `claude-usage-<suffix>.json` for each `CLAUDE_CONFIG_DIR` login.
+    static func lastGoodFileName(service: String) -> String {
+        let suffix = service.hasPrefix(ClaudeKeychain.defaultService)
+            ? String(service.dropFirst(ClaudeKeychain.defaultService.count))
+            : "-" + service.replacingOccurrences(of: " ", with: "-")
+        return "claude-usage\(suffix).json"
+    }
+
+    /// The raw body of the last successful usage response and when it arrived.
+    public func lastGoodPayload() -> (data: Data, savedAt: Date)? {
+        lastGood.load()
+    }
+
+    /// Current access token and plan of this login, read fresh from the keychain.
+    public func readToken() throws -> ClaudeKeychain.Token {
+        try ClaudeKeychain.readAccessToken(service: service)
     }
 
     private enum FetchDecision {
@@ -118,7 +137,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
 
         switch decision {
         case let .cached(snapshot):
-            return withFreshLocalStats(snapshot)
+            return snapshot
         case let .rateLimited(until):
             throw ClaudeUsageError.rateLimited(until: until)
         case let .join(task):
@@ -129,7 +148,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
                 // Any failure (network, keychain, HTTP, decode) keeps the last known values on
                 // screen; their old `refreshedAt` marks them stale.
                 if let cached = stateLock.withLock({ cachedSnapshot }) {
-                    return withFreshLocalStats(cached)
+                    return cached
                 }
                 throw error
             }
@@ -144,7 +163,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
             stateLock.withLock { inFlightTask = nil }
         }
 
-        let token = try ClaudeKeychain.readAccessToken()
+        let token = try readToken()
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
@@ -179,7 +198,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
                 }
                 Self.log.debug("claude usage rate-limited; backing off until \(until, privacy: .public)")
                 // Keep showing the last good data (stale) rather than an error whenever we can.
-                if let cached { return withFreshLocalStats(cached) }
+                if let cached { return cached }
                 throw ClaudeUsageError.rateLimited(until: until)
             }
             throw ClaudeUsageError.http(status: http.statusCode, body: body)
@@ -187,10 +206,7 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
 
         let decoded = try JSONDecoder().decode(ClaudeUsageDTO.self, from: data)
         let fetchedAt = Date()
-        var snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: fetchedAt)
-
-        // Local Claude Code transcripts (Fable excluded), surfaced as the usage card.
-        snapshot.onlineTokenStats = currentLocalStats()
+        let snapshot = ClaudeUsageMapper.snapshot(from: decoded, now: fetchedAt)
 
         if snapshot.limits.isEmpty {
             throw ClaudeUsageError.emptyShape(body: body)
@@ -203,31 +219,6 @@ public final class ClaudeUsageProvider: StatusProviding, @unchecked Sendable {
         }
         lastGood.save(data)
         return snapshot
-    }
-
-    /// Return a cached snapshot with only its local transcript stats refreshed. The API-derived
-    /// `refreshedAt` is intentionally left untouched so the popover renders it as stale data.
-    private func withFreshLocalStats(_ snapshot: CodexStatusSnapshot) -> CodexStatusSnapshot {
-        var copy = snapshot
-        copy.onlineTokenStats = currentLocalStats() ?? snapshot.onlineTokenStats
-        return copy
-    }
-
-    /// Latest finished transcript totals; starts a background rescan when none is running.
-    private func currentLocalStats() -> TokenUsageStats? {
-        stateLock.withLock {
-            if localStatsTask == nil {
-                localStatsTask = Task.detached(priority: .utility) { [weak self] in
-                    let stats = ClaudeTokenUsageProvider.load(now: Date())
-                    guard let self else { return }
-                    self.stateLock.withLock {
-                        if let stats { self.latestLocalStats = stats }
-                        self.localStatsTask = nil
-                    }
-                }
-            }
-            return latestLocalStats
-        }
     }
 
     /// Parse a `Retry-After` header, which may be an integer number of seconds or an HTTP date.

@@ -9,8 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // No fast 5s/20s retries for Claude: the usage endpoint answers rate-limits with a long
     // Retry-After, so quick retries only re-trip it. Cadence is the provider's 60s throttle plus
     // the store's 3-minute ticker; the provider serves cached data in between.
-    private let claudeStore = StatusStore(
-        provider: ClaudeUsageProvider(),
+    // Claude covers every account: this Mac's Claude Code logins plus the other Mac's, over SSH.
+    private let claudeProvider = ClaudeAccountsProvider()
+    private lazy var claudeStore = StatusStore(
+        provider: claudeProvider,
         tokenStatsLoader: { _, _ in nil },
         refreshRetryPolicy: .disabled,
         autoRefreshInterval: .seconds(180)
@@ -19,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        claudeProvider.onPeerUpdate { [weak self] in
+            Task { @MainActor in self?.claudeStore.refresh() }
+        }
         statusController = StatusBarController(store: store, claudeStore: claudeStore)
         NSAppleEventManager.shared().setEventHandler(
             self,

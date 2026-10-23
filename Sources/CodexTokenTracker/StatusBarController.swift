@@ -266,33 +266,58 @@ private extension LimitWarningLevel {
 }
 
 /// Menu-bar summary, colored per provider: Codex monthly credits (blue) as one bar + number,
-/// Claude 5h and weekly (orange) as two stacked bars + numbers. Bars fill with the share still
-/// left and numbers are % left, matching the popover. Drawn at display time so the text follows
-/// the menu bar's light/dark appearance.
+/// then two Claude blocks (orange) — the team account left, the personal account right — each
+/// with 5h and weekly as two stacked bars + numbers. Bars fill with the share still left and
+/// numbers are % left, matching the popover. Drawn at display time so the text follows the menu
+/// bar's light/dark appearance.
 struct MenuBarBars {
     static let codexColor = NSColor(srgbRed: 30 / 255, green: 136 / 255, blue: 229 / 255, alpha: 1)
     static let claudeColor = NSColor(srgbRed: 217 / 255, green: 119 / 255, blue: 87 / 255, alpha: 1)
 
+    struct ClaudeAccountBars {
+        var label: String?
+        var sessionLeft: Int?
+        var weeklyLeft: Int?
+    }
+
     var codexMonthlyLeft: Int?
-    var claudeSessionLeft: Int?
-    var claudeWeeklyLeft: Int?
+    var claudeTeam = ClaudeAccountBars()
+    var claudePersonal = ClaudeAccountBars()
 
     init(codex: CodexStatusSnapshot?, claude: CodexStatusSnapshot?) {
-        func left(_ snapshot: CodexStatusSnapshot?, label: String) -> Int? {
-            snapshot?.limits.flatMap(\.windows).first { $0.label == label && $0.showsNumericUsage }?.percentLeft
+        func left(_ windows: [LimitWindowDisplay], label: String) -> Int? {
+            windows.first { $0.label == label && $0.showsNumericUsage }?.percentLeft
         }
-        codexMonthlyLeft = left(codex, label: "Monthly credits")
-        claudeSessionLeft = left(claude, label: "5h limit")
-        claudeWeeklyLeft = left(claude, label: "Weekly limit")
+        func bars(_ kind: String) -> ClaudeAccountBars {
+            guard let bucket = claude?.limits.first(where: { $0.id.hasPrefix("claude-\(kind)-") }) else {
+                return ClaudeAccountBars()
+            }
+            return ClaudeAccountBars(
+                label: bucket.label,
+                sessionLeft: left(bucket.windows, label: "5h limit"),
+                weeklyLeft: left(bucket.windows, label: "Weekly limit")
+            )
+        }
+        codexMonthlyLeft = left(codex?.limits.flatMap(\.windows) ?? [], label: "Monthly credits")
+        claudeTeam = bars("team")
+        claudePersonal = bars("personal")
     }
 
     var hasAnyValue: Bool {
-        [codexMonthlyLeft, claudeSessionLeft, claudeWeeklyLeft].contains { $0 != nil }
+        [codexMonthlyLeft, claudeTeam.sessionLeft, claudeTeam.weeklyLeft, claudePersonal.sessionLeft, claudePersonal.weeklyLeft]
+            .contains { $0 != nil }
     }
 
     var tooltip: String {
         func text(_ value: Int?) -> String { value.map { "\($0)% left" } ?? "–" }
-        return "Codex monthly \(text(codexMonthlyLeft)) · Claude 5h \(text(claudeSessionLeft)) · weekly \(text(claudeWeeklyLeft))"
+        func claude(_ bars: ClaudeAccountBars, fallback: String) -> String {
+            "\(bars.label ?? fallback) 5h \(text(bars.sessionLeft)) · weekly \(text(bars.weeklyLeft))"
+        }
+        return [
+            "Codex monthly \(text(codexMonthlyLeft))",
+            "Claude \(claude(claudeTeam, fallback: "Team"))",
+            "Claude \(claude(claudePersonal, fallback: "Personal"))",
+        ].joined(separator: "\n")
     }
 
     private static let barWidth: CGFloat = 30
@@ -302,17 +327,19 @@ struct MenuBarBars {
 
     func image() -> NSImage {
         let blockWidth = Self.barWidth + 3 + Self.numberWidth
-        let size = NSSize(width: blockWidth * 2 + Self.blockGap, height: Self.height)
+        let size = NSSize(width: blockWidth * 3 + Self.blockGap * 2, height: Self.height)
         let image = NSImage(size: size, flipped: true) { _ in
             // Codex: one bar, vertically centred, larger number.
             Self.drawRow(value: codexMonthlyLeft, color: Self.codexColor, x: 0, midY: Self.height / 2,
                          barHeight: 4, fontSize: 11)
-            // Claude: 5h on top, weekly below.
-            let claudeX = blockWidth + Self.blockGap
-            Self.drawRow(value: claudeSessionLeft, color: Self.claudeColor, x: claudeX, midY: 4.5,
-                         barHeight: 3, fontSize: 8.5)
-            Self.drawRow(value: claudeWeeklyLeft, color: Self.claudeColor, x: claudeX, midY: 13.5,
-                         barHeight: 3, fontSize: 8.5)
+            // Claude: team block, then personal block; each 5h on top, weekly below.
+            for (index, account) in [claudeTeam, claudePersonal].enumerated() {
+                let x = (blockWidth + Self.blockGap) * CGFloat(index + 1)
+                Self.drawRow(value: account.sessionLeft, color: Self.claudeColor, x: x, midY: 4.5,
+                             barHeight: 3, fontSize: 8.5)
+                Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: 13.5,
+                             barHeight: 3, fontSize: 8.5)
+            }
             return true
         }
         image.isTemplate = false

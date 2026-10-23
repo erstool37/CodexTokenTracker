@@ -28,6 +28,10 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
 /// `"Claude Code-credentials"` and whose account is the macOS short username. The
 /// secret is a JSON blob of the shape `{"claudeAiOauth":{"accessToken":"…","expiresAt":<ms>,…}}`.
 ///
+/// A Claude Code started with `CLAUDE_CONFIG_DIR` keeps a separate login under
+/// `"Claude Code-credentials-<first 8 hex of sha256(config dir)>"`, so one Mac can hold a team
+/// and a personal login at once. `credentialServices()` finds all of them.
+///
 /// ## Why this shells out to `/usr/bin/security` instead of `SecItemCopyMatching`
 ///
 /// Claude Code restricts the item's decrypt ACL to a trusted-application list and a
@@ -42,12 +46,13 @@ public enum ClaudeKeychainError: Error, LocalizedError, Sendable {
 /// own (per-build) code identity and stops the repeated prompts. The secret is returned
 /// on `security`'s stdout, never via argv, so it is not exposed in the process list.
 public enum ClaudeKeychain {
-    private static let service = "Claude Code-credentials"
+    public static let defaultService = "Claude Code-credentials"
 
     private struct Stored: Decodable {
         struct OAuth: Decodable {
             let accessToken: String?
             let expiresAt: Double?
+            let subscriptionType: String?
         }
         let claudeAiOauth: OAuth?
     }
@@ -55,10 +60,15 @@ public enum ClaudeKeychain {
     public struct Token: Sendable {
         public let accessToken: String
         public let expiresAtMillis: Double?
+        /// Plan of the signed-in organization as Claude Code records it ("team", "max", "pro", …).
+        public let subscriptionType: String?
     }
 
-    public static func readAccessToken(account: String = NSUserName()) throws -> Token {
-        let data = try copySecret(account: account)
+    public static func readAccessToken(
+        service: String = defaultService,
+        account: String = NSUserName()
+    ) throws -> Token {
+        let data = try copySecret(service: service, account: account)
 
         guard
             let stored = try? JSONDecoder().decode(Stored.self, from: data),
@@ -68,41 +78,63 @@ public enum ClaudeKeychain {
             throw ClaudeKeychainError.malformedSecret
         }
 
-        return Token(accessToken: token, expiresAtMillis: stored.claudeAiOauth?.expiresAt)
+        return Token(
+            accessToken: token,
+            expiresAtMillis: stored.claudeAiOauth?.expiresAt,
+            subscriptionType: stored.claudeAiOauth?.subscriptionType
+        )
+    }
+
+    /// Every Claude Code login on this Mac: the default item plus one per `CLAUDE_CONFIG_DIR`.
+    /// Reads only item attributes (`security dump-keychain` without `-d`), never secrets, so it
+    /// does not prompt. Falls back to the default service when the listing fails.
+    public static func credentialServices() -> [String] {
+        guard let output = runSecurity(["dump-keychain"]).flatMap({ String(data: $0.stdout, encoding: .utf8) }) else {
+            return [defaultService]
+        }
+        let services = parseCredentialServices(fromKeychainDump: output)
+        return services.isEmpty ? [defaultService] : services
+    }
+
+    /// Pull Claude Code credential service names out of `security dump-keychain` output.
+    public static func parseCredentialServices(fromKeychainDump dump: String) -> [String] {
+        let pattern = #""svce"<blob>="(Claude Code-credentials(?:-[0-9a-f]{8})?)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(dump.startIndex..., in: dump)
+        var seen = Set<String>()
+        var services: [String] = []
+        for match in regex.matches(in: dump, range: range) {
+            guard let serviceRange = Range(match.range(at: 1), in: dump) else { continue }
+            let service = String(dump[serviceRange])
+            if seen.insert(service).inserted {
+                services.append(service)
+            }
+        }
+        // Default login first, then the per-config-dir ones in a stable order.
+        return services.sorted { lhs, rhs in
+            if lhs == defaultService { return true }
+            if rhs == defaultService { return false }
+            return lhs < rhs
+        }
     }
 
     /// Invokes `/usr/bin/security find-generic-password -w` and returns the raw secret bytes.
     /// Maps the tool's exit code back onto the same error space the direct API used so callers
     /// (and their UI strings) are unchanged.
-    private static func copySecret(account: String) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = [
+    private static func copySecret(service: String, account: String) throws -> Data {
+        guard let result = runSecurity([
             "find-generic-password",
             "-s", service,
             "-a", account,
             "-w", // print only the password (secret) to stdout
-        ]
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        do {
-            try process.run()
-        } catch {
+        ]) else {
             throw ClaudeKeychainError.keychainStatus(errSecInternalComponent)
         }
 
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        stderr.fileHandleForReading.readDataToEndOfFile() // drain to avoid a full-pipe stall
-        process.waitUntilExit()
-
-        switch process.terminationStatus {
+        switch result.status {
         case 0:
             // `security -w` appends a trailing newline; trim it before JSON decoding.
-            let trimmed = String(data: outData, encoding: .utf8)?
+            let trimmed = String(data: result.stdout, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let trimmed, let bytes = trimmed.data(using: .utf8) else {
                 throw ClaudeKeychainError.malformedSecret
@@ -113,5 +145,27 @@ public enum ClaudeKeychain {
         case let code:
             throw ClaudeKeychainError.keychainStatus(OSStatus(code))
         }
+    }
+
+    private static func runSecurity(_ arguments: [String]) -> (stdout: Data, status: Int32)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = arguments
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+        stderr.fileHandleForReading.readDataToEndOfFile() // drain to avoid a full-pipe stall
+        process.waitUntilExit()
+        return (outData, process.terminationStatus)
     }
 }

@@ -246,6 +246,58 @@ expect(claudeLegacy.limits.first?.windows.map(\.label) == ["5h limit", "Weekly l
 expect(claudeLegacy.limits.first?.windows.first?.percentLeft == 75, "legacy 5h percent left should map")
 expect(claudeLegacy.limits.first?.creditsText == "3/10 credits", "legacy credits should render")
 
+// Multiple Claude accounts: every Claude Code login (default + one per CLAUDE_CONFIG_DIR) is
+// found in the keychain, and accounts merge per organization with team before personal.
+let keychainDump = """
+    "svce"<blob>="Claude Safe Storage"
+    "svce"<blob>="Claude Code-credentials-1a2b3c4d"
+    "svce"<blob>="Claude Code-credentials"
+    "svce"<blob>="Claude Code-device-keys"
+    "svce"<blob>="Claude Code-credentials-1a2b3c4d"
+"""
+expect(
+    ClaudeKeychain.parseCredentialServices(fromKeychainDump: keychainDump)
+        == ["Claude Code-credentials", "Claude Code-credentials-1a2b3c4d"],
+    "keychain listing should find the default and per-config-dir Claude Code logins only"
+)
+let teamIdentity = ClaudeAccountIdentity(
+    organizationUUID: "org-team", organizationName: "LAMP", organizationType: "claude_team",
+    subscriptionType: "team", rateLimitTier: "default_claude_max_5x"
+)
+let personalIdentity = ClaudeAccountIdentity(
+    organizationUUID: "org-personal", organizationName: "erstool37@snu.ac.kr's Organization",
+    organizationType: "claude_max", subscriptionType: "max", rateLimitTier: "default_claude_max_20x"
+)
+expect(teamIdentity.kind == .team && teamIdentity.label == "LAMP · Team", "team org should label by name — got \(teamIdentity.label)")
+expect(personalIdentity.kind == .personal && personalIdentity.label == "Personal · Max 20x", "personal org should label by plan — got \(personalIdentity.label)")
+expect(ClaudeAccountIdentity(organizationUUID: "x", subscriptionType: "pro").label == "Personal · Pro", "plan falls back to the keychain subscription type")
+
+let olderTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow.addingTimeInterval(-600))
+let newerTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
+let personalSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeLegacyJSON, now: claudeNow)
+let mergedAccounts = ClaudeAccountMerger.merge([
+    ClaudeAccountEntry(identity: personalIdentity, snapshot: personalSnapshot, machineName: "MacBook Air", isLocal: false),
+    ClaudeAccountEntry(identity: teamIdentity, snapshot: olderTeam, machineName: "MacBook Pro", isLocal: true),
+    ClaudeAccountEntry(identity: teamIdentity, snapshot: newerTeam, machineName: "MacBook Air", isLocal: false),
+])
+expect(mergedAccounts.map(\.identity.organizationUUID) == ["org-team", "org-personal"], "one entry per org, team first")
+expect(mergedAccounts[0].snapshot?.refreshedAt == claudeNow, "the newest report of an org wins")
+let combined = ClaudeAccountMerger.combinedSnapshot(mergedAccounts, now: claudeNow, localStats: nil)
+expect(combined.limits.map(\.id) == ["claude-team-org-team", "claude-personal-org-personal"], "one bucket per account, kind in the id")
+expect(combined.limits[1].statusText == "via MacBook Air", "peer data should say which Mac it came from — got \(combined.limits[1].statusText ?? "nil")")
+expect(combined.limits[1].windows.map(\.label) == ["5h limit", "Weekly limit"], "each account keeps its own windows")
+let missing = ClaudeAccountMerger.combinedSnapshot(
+    [ClaudeAccountEntry(identity: personalIdentity, snapshot: nil, machineName: "MacBook Pro", isLocal: true, errorMessage: "Sign in to Claude Code")],
+    now: claudeNow, localStats: nil
+)
+expect(missing.limits[0].windows.isEmpty && missing.limits[0].statusText == "Sign in to Claude Code", "an account without data shows why")
+let published = ClaudePublishedAccounts(
+    machineID: "m1", machineName: "MacBook Pro", publishedAt: 1,
+    accounts: [.init(identity: teamIdentity, fetchedAt: 2, usage: String(data: claudeAdaptiveJSON, encoding: .utf8)!)]
+)
+let roundTrip = try JSONDecoder().decode(ClaudePublishedAccounts.self, from: JSONEncoder().encode(published))
+expect(roundTrip == published, "published account file should round-trip")
+
 // The shared adaptive labeler humanizes never-before-seen identifiers legibly.
 expect(AdaptiveLabel.humanize("seven_day_haiku") == "Seven Day Haiku", "unknown snake_case humanizes")
 expect(AdaptiveLabel.humanize("codex") == "Codex", "single token capitalizes")
