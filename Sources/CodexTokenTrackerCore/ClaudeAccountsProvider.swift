@@ -178,19 +178,6 @@ public enum ClaudeAccountMerger {
         return lhs.identity.label.localizedStandardCompare(rhs.identity.label) == .orderedAscending
     }
 
-    /// Short menu-bar tag for an account bucket: the team's name when short ("LAMP"), else its
-    /// initials; "P" for a personal plan.
-    public static func menuBarTag(bucketID: String, label: String) -> String {
-        guard bucketID.hasPrefix("claude-\(ClaudeAccountKind.team.rawValue)-") else { return "P" }
-        let name = label.components(separatedBy: " · ").first?.trimmingCharacters(in: .whitespaces) ?? ""
-        let words = name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-        guard !words.isEmpty else { return "T" }
-        if words.count == 1 {
-            return String(words[0].prefix(4)).uppercased()
-        }
-        return String(words.compactMap(\.first).prefix(3)).uppercased()
-    }
-
     /// Combine the accounts into the single snapshot the Claude pane renders: one limit bucket
     /// per account, labeled with its organization, in display order (team first). Bucket ids
     /// start with `claude-team-` or `claude-personal-`; the menu bar draws one block per bucket.

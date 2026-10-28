@@ -338,10 +338,6 @@ expect(ClaudeCredentialSource.keychain(service: "Claude Code-credentials-\(extra
 expect(ClaudeCredentialSource.keychain(service: "Claude Code-credentials-00000000").currentOrganizationUUID(home: fakeHome) == nil,
        "unknown config dir leaves the org unknown")
 
-// Menu-bar tags follow the account, not a fixed slot.
-expect(ClaudeAccountMerger.menuBarTag(bucketID: "claude-team-x", label: "LAMP · Team") == "LAMP", "short team name is its tag")
-expect(ClaudeAccountMerger.menuBarTag(bucketID: "claude-team-x", label: "Seoul National Univ · Team") == "SNU", "long team name uses initials")
-expect(ClaudeAccountMerger.menuBarTag(bucketID: "claude-personal-x", label: "Personal · Max 5x") == "P", "personal plan is P")
 
 // The shared adaptive labeler humanizes never-before-seen identifiers legibly.
 expect(AdaptiveLabel.humanize("seven_day_haiku") == "Seven Day Haiku", "unknown snake_case humanizes")

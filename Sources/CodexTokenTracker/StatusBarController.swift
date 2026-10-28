@@ -267,8 +267,8 @@ private extension LimitWarningLevel {
 
 /// Menu-bar summary, colored per provider: Codex monthly credits (blue) as one bar + number,
 /// then one Claude block (orange) per account the Macs are signed in to — team accounts first —
-/// each tagged ("LAMP", "P") with 5h and weekly as two stacked bars + numbers. The blocks follow
-/// whatever accounts are logged in, so switching a Mac's login changes the bar. Bars fill with
+/// each with 5h and weekly as two stacked bars + numbers; position tells them apart. The blocks
+/// follow whatever accounts are logged in, so switching a Mac's login changes the bar. Bars fill with
 /// the share still left and numbers are % left, matching the popover. Drawn at display time so
 /// the text follows the menu bar's light/dark appearance.
 struct MenuBarBars {
@@ -278,7 +278,6 @@ struct MenuBarBars {
     static let maxClaudeBlocks = 3
 
     struct ClaudeAccountBars {
-        var tag: String
         var label: String
         var sessionLeft: Int?
         var weeklyLeft: Int?
@@ -296,7 +295,6 @@ struct MenuBarBars {
             .filter { $0.id.hasPrefix("claude-") }
             .map { bucket in
                 ClaudeAccountBars(
-                    tag: ClaudeAccountMerger.menuBarTag(bucketID: bucket.id, label: bucket.label),
                     label: bucket.label,
                     sessionLeft: left(bucket.windows, label: "5h limit"),
                     weeklyLeft: left(bucket.windows, label: "Weekly limit")
@@ -319,41 +317,23 @@ struct MenuBarBars {
     private static let barWidth: CGFloat = 30
     private static let numberWidth: CGFloat = 26
     private static let blockGap: CGFloat = 8
-    private static let tagGap: CGFloat = 2
     private static let height: CGFloat = 18
-    private static var tagFont: NSFont { .systemFont(ofSize: 7.5, weight: .bold) }
 
     func image() -> NSImage {
         let blockWidth = Self.barWidth + 3 + Self.numberWidth
         let shown = Array(claudeAccounts.prefix(Self.maxClaudeBlocks))
-        let tagAttributes: [NSAttributedString.Key: Any] = [
-            .font: Self.tagFont,
-            .foregroundColor: NSColor.secondaryLabelColor
-        ]
-        let tagWidths = shown.map { ceil(($0.tag as NSString).size(withAttributes: tagAttributes).width) }
-        let claudeWidth = zip(shown, tagWidths).reduce(CGFloat(0)) { total, pair in
-            total + Self.blockGap + pair.1 + Self.tagGap + blockWidth
-        }
-        let size = NSSize(width: blockWidth + claudeWidth, height: Self.height)
+        let size = NSSize(width: blockWidth + (Self.blockGap + blockWidth) * CGFloat(shown.count), height: Self.height)
         let image = NSImage(size: size, flipped: true) { _ in
             // Codex: one bar, vertically centred, larger number.
             Self.drawRow(value: codexMonthlyLeft, color: Self.codexColor, x: 0, midY: Self.height / 2,
                          barHeight: 4, fontSize: 11)
-            // Claude: one tagged block per account; 5h on top, weekly below.
-            var x = blockWidth
-            for (account, tagWidth) in zip(shown, tagWidths) {
-                x += Self.blockGap
-                let tagHeight = (account.tag as NSString).size(withAttributes: tagAttributes).height
-                (account.tag as NSString).draw(
-                    at: NSPoint(x: x, y: (Self.height - tagHeight) / 2),
-                    withAttributes: tagAttributes
-                )
-                x += tagWidth + Self.tagGap
+            // Claude: one block per account, team first; 5h on top, weekly below.
+            for (index, account) in shown.enumerated() {
+                let x = (blockWidth + Self.blockGap) * CGFloat(index + 1)
                 Self.drawRow(value: account.sessionLeft, color: Self.claudeColor, x: x, midY: 4.5,
                              barHeight: 3, fontSize: 8.5)
                 Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: 13.5,
                              barHeight: 3, fontSize: 8.5)
-                x += blockWidth
             }
             return true
         }
