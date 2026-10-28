@@ -1,3 +1,4 @@
+import CryptoKit
 import CodexTokenTrackerCore
 import Foundation
 #if canImport(AppKit)
@@ -297,6 +298,50 @@ let published = ClaudePublishedAccounts(
 )
 let roundTrip = try JSONDecoder().decode(ClaudePublishedAccounts.self, from: JSONEncoder().encode(published))
 expect(roundTrip == published, "published account file should round-trip")
+
+// Two logins of one org on a Mac publish once, with the newest usage.
+let staleUsage = ClaudePublishedAccounts.Account(identity: personalIdentity, fetchedAt: 10, usage: "stale")
+let freshUsage = ClaudePublishedAccounts.Account(identity: personalIdentity, fetchedAt: 20, usage: "fresh")
+let teamUsage = ClaudePublishedAccounts.Account(identity: teamIdentity, fetchedAt: 5, usage: "team")
+expect(
+    ClaudePublishedAccounts.newestPerOrganization([staleUsage, teamUsage, freshUsage]).map(\.usage) == ["fresh", "team"],
+    "duplicate org logins should publish only the newest"
+)
+
+// The last-good payload's savedAt follows every rewrite (URL resource values are cached).
+let payloadDir = FileManager.default.temporaryDirectory.appendingPathComponent("ctt-checks-\(UUID().uuidString)")
+try FileManager.default.createDirectory(at: payloadDir, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: payloadDir) }
+let payloadStore = LastGoodPayloadStore(url: payloadDir.appendingPathComponent("p.json"))
+payloadStore.save(Data("1".utf8))
+try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000)], ofItemAtPath: payloadStore.url.path)
+expect(payloadStore.load()?.savedAt == Date(timeIntervalSince1970: 1_000), "savedAt should read the file mtime")
+payloadStore.save(Data("2".utf8))
+expect((payloadStore.load()?.savedAt.timeIntervalSinceNow ?? -999) > -60, "savedAt should advance after a later save")
+
+// Each login maps to the org its Claude Code config is signed in to now.
+let fakeHome = payloadDir.appendingPathComponent("home")
+let extraDir = fakeHome.appendingPathComponent(".claude-work")
+try FileManager.default.createDirectory(at: fakeHome.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+try FileManager.default.createDirectory(at: extraDir, withIntermediateDirectories: true)
+try Data(#"{"oauthAccount":{"organizationUuid":"org-personal"},"projects":{}}"#.utf8)
+    .write(to: fakeHome.appendingPathComponent(".claude.json"))
+try Data(#"{"oauthAccount":{"organizationUuid":"org-team"}}"#.utf8)
+    .write(to: extraDir.appendingPathComponent(".claude.json"))
+let extraHash = SHA256.hash(data: Data(extraDir.path.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
+expect(ClaudeCredentialSource.keychain(service: "Claude Code-credentials").currentOrganizationUUID(home: fakeHome) == "org-personal",
+       "default keychain login reads ~/.claude.json")
+expect(ClaudeCredentialSource.file(path: fakeHome.appendingPathComponent(".claude/.credentials.json").path)
+    .currentOrganizationUUID(home: fakeHome) == "org-personal", "~/.claude/.credentials.json reads ~/.claude.json")
+expect(ClaudeCredentialSource.keychain(service: "Claude Code-credentials-\(extraHash)").currentOrganizationUUID(home: fakeHome) == "org-team",
+       "CLAUDE_CONFIG_DIR keychain login reads <dir>/.claude.json")
+expect(ClaudeCredentialSource.keychain(service: "Claude Code-credentials-00000000").currentOrganizationUUID(home: fakeHome) == nil,
+       "unknown config dir leaves the org unknown")
+
+// Menu-bar tags follow the account, not a fixed slot.
+expect(ClaudeAccountMerger.menuBarTag(bucketID: "claude-team-x", label: "LAMP · Team") == "LAMP", "short team name is its tag")
+expect(ClaudeAccountMerger.menuBarTag(bucketID: "claude-team-x", label: "Seoul National Univ · Team") == "SNU", "long team name uses initials")
+expect(ClaudeAccountMerger.menuBarTag(bucketID: "claude-personal-x", label: "Personal · Max 5x") == "P", "personal plan is P")
 
 // The shared adaptive labeler humanizes never-before-seen identifiers legibly.
 expect(AdaptiveLabel.humanize("seven_day_haiku") == "Seven Day Haiku", "unknown snake_case humanizes")

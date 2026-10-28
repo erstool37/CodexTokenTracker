@@ -21,11 +21,13 @@ public struct LastGoodPayloadStore: Sendable {
         try? data.write(to: url, options: .atomic)
     }
 
-    /// The saved body and when it was saved (the file's modification time).
+    /// The saved body and when it was saved (the file's modification time). Read through
+    /// `FileManager`, not `URL.resourceValues`: a URL caches its resource values, so the store
+    /// kept reporting the first modification time it saw, and peers got days-old `fetchedAt`s.
     public func load() -> (data: Data, savedAt: Date)? {
         guard
             let data = try? Data(contentsOf: url),
-            let savedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let savedAt = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
         else {
             return nil
         }

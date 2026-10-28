@@ -266,79 +266,94 @@ private extension LimitWarningLevel {
 }
 
 /// Menu-bar summary, colored per provider: Codex monthly credits (blue) as one bar + number,
-/// then two Claude blocks (orange) — the team account left, the personal account right — each
-/// with 5h and weekly as two stacked bars + numbers. Bars fill with the share still left and
-/// numbers are % left, matching the popover. Drawn at display time so the text follows the menu
-/// bar's light/dark appearance.
+/// then one Claude block (orange) per account the Macs are signed in to — team accounts first —
+/// each tagged ("LAMP", "P") with 5h and weekly as two stacked bars + numbers. The blocks follow
+/// whatever accounts are logged in, so switching a Mac's login changes the bar. Bars fill with
+/// the share still left and numbers are % left, matching the popover. Drawn at display time so
+/// the text follows the menu bar's light/dark appearance.
 struct MenuBarBars {
     static let codexColor = NSColor(srgbRed: 30 / 255, green: 136 / 255, blue: 229 / 255, alpha: 1)
     static let claudeColor = NSColor(srgbRed: 217 / 255, green: 119 / 255, blue: 87 / 255, alpha: 1)
+    /// More accounts than this go to the tooltip and popover only.
+    static let maxClaudeBlocks = 3
 
     struct ClaudeAccountBars {
-        var label: String?
+        var tag: String
+        var label: String
         var sessionLeft: Int?
         var weeklyLeft: Int?
     }
 
     var codexMonthlyLeft: Int?
-    var claudeTeam = ClaudeAccountBars()
-    var claudePersonal = ClaudeAccountBars()
+    var claudeAccounts: [ClaudeAccountBars] = []
 
     init(codex: CodexStatusSnapshot?, claude: CodexStatusSnapshot?) {
         func left(_ windows: [LimitWindowDisplay], label: String) -> Int? {
             windows.first { $0.label == label && $0.showsNumericUsage }?.percentLeft
         }
-        func bars(_ kind: String) -> ClaudeAccountBars {
-            guard let bucket = claude?.limits.first(where: { $0.id.hasPrefix("claude-\(kind)-") }) else {
-                return ClaudeAccountBars()
-            }
-            return ClaudeAccountBars(
-                label: bucket.label,
-                sessionLeft: left(bucket.windows, label: "5h limit"),
-                weeklyLeft: left(bucket.windows, label: "Weekly limit")
-            )
-        }
         codexMonthlyLeft = left(codex?.limits.flatMap(\.windows) ?? [], label: "Monthly credits")
-        claudeTeam = bars("team")
-        claudePersonal = bars("personal")
+        claudeAccounts = (claude?.limits ?? [])
+            .filter { $0.id.hasPrefix("claude-") }
+            .map { bucket in
+                ClaudeAccountBars(
+                    tag: ClaudeAccountMerger.menuBarTag(bucketID: bucket.id, label: bucket.label),
+                    label: bucket.label,
+                    sessionLeft: left(bucket.windows, label: "5h limit"),
+                    weeklyLeft: left(bucket.windows, label: "Weekly limit")
+                )
+            }
     }
 
     var hasAnyValue: Bool {
-        [codexMonthlyLeft, claudeTeam.sessionLeft, claudeTeam.weeklyLeft, claudePersonal.sessionLeft, claudePersonal.weeklyLeft]
-            .contains { $0 != nil }
+        codexMonthlyLeft != nil || claudeAccounts.contains { $0.sessionLeft != nil || $0.weeklyLeft != nil }
     }
 
     var tooltip: String {
         func text(_ value: Int?) -> String { value.map { "\($0)% left" } ?? "–" }
-        func claude(_ bars: ClaudeAccountBars, fallback: String) -> String {
-            "\(bars.label ?? fallback) 5h \(text(bars.sessionLeft)) · weekly \(text(bars.weeklyLeft))"
-        }
-        return [
-            "Codex monthly \(text(codexMonthlyLeft))",
-            "Claude \(claude(claudeTeam, fallback: "Team"))",
-            "Claude \(claude(claudePersonal, fallback: "Personal"))",
-        ].joined(separator: "\n")
+        let claude = claudeAccounts.isEmpty
+            ? ["Claude – no signed-in account"]
+            : claudeAccounts.map { "Claude \($0.label) 5h \(text($0.sessionLeft)) · weekly \(text($0.weeklyLeft))" }
+        return (["Codex monthly \(text(codexMonthlyLeft))"] + claude).joined(separator: "\n")
     }
 
     private static let barWidth: CGFloat = 30
     private static let numberWidth: CGFloat = 26
     private static let blockGap: CGFloat = 8
+    private static let tagGap: CGFloat = 2
     private static let height: CGFloat = 18
+    private static var tagFont: NSFont { .systemFont(ofSize: 7.5, weight: .bold) }
 
     func image() -> NSImage {
         let blockWidth = Self.barWidth + 3 + Self.numberWidth
-        let size = NSSize(width: blockWidth * 3 + Self.blockGap * 2, height: Self.height)
+        let shown = Array(claudeAccounts.prefix(Self.maxClaudeBlocks))
+        let tagAttributes: [NSAttributedString.Key: Any] = [
+            .font: Self.tagFont,
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+        let tagWidths = shown.map { ceil(($0.tag as NSString).size(withAttributes: tagAttributes).width) }
+        let claudeWidth = zip(shown, tagWidths).reduce(CGFloat(0)) { total, pair in
+            total + Self.blockGap + pair.1 + Self.tagGap + blockWidth
+        }
+        let size = NSSize(width: blockWidth + claudeWidth, height: Self.height)
         let image = NSImage(size: size, flipped: true) { _ in
             // Codex: one bar, vertically centred, larger number.
             Self.drawRow(value: codexMonthlyLeft, color: Self.codexColor, x: 0, midY: Self.height / 2,
                          barHeight: 4, fontSize: 11)
-            // Claude: team block, then personal block; each 5h on top, weekly below.
-            for (index, account) in [claudeTeam, claudePersonal].enumerated() {
-                let x = (blockWidth + Self.blockGap) * CGFloat(index + 1)
+            // Claude: one tagged block per account; 5h on top, weekly below.
+            var x = blockWidth
+            for (account, tagWidth) in zip(shown, tagWidths) {
+                x += Self.blockGap
+                let tagHeight = (account.tag as NSString).size(withAttributes: tagAttributes).height
+                (account.tag as NSString).draw(
+                    at: NSPoint(x: x, y: (Self.height - tagHeight) / 2),
+                    withAttributes: tagAttributes
+                )
+                x += tagWidth + Self.tagGap
                 Self.drawRow(value: account.sessionLeft, color: Self.claudeColor, x: x, midY: 4.5,
                              barHeight: 3, fontSize: 8.5)
                 Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: 13.5,
                              barHeight: 3, fontSize: 8.5)
+                x += blockWidth
             }
             return true
         }

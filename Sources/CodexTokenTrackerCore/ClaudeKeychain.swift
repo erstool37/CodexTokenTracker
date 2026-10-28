@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -59,6 +60,62 @@ public enum ClaudeCredentialSource: Hashable, Sendable {
             return "file:\(path)"
         }
     }
+
+    /// The organization the login's Claude Code config is signed in to right now — the
+    /// `oauthAccount.organizationUuid` Claude Code keeps in `.claude.json` (`~/.claude.json` for
+    /// the default config dir, `<dir>/.claude.json` under `CLAUDE_CONFIG_DIR`). Nil when the
+    /// config can't be found or read. A credential whose organization differs is left over from
+    /// an earlier login on this Mac, not a current one.
+    public func currentOrganizationUUID(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        configJSONURL(home: home)
+            .flatMap { FileManager.default.contents(atPath: $0.path) }
+            .flatMap(Self.organizationUUID(fromConfigJSON:))
+    }
+
+    static func organizationUUID(fromConfigJSON data: Data) -> String? {
+        struct Config: Decodable {
+            struct OAuthAccount: Decodable { let organizationUuid: String? }
+            let oauthAccount: OAuthAccount?
+        }
+        guard let uuid = (try? JSONDecoder().decode(Config.self, from: data))?.oauthAccount?.organizationUuid,
+              !uuid.isEmpty else {
+            return nil
+        }
+        return uuid
+    }
+
+    func configJSONURL(home: URL) -> URL? {
+        let defaultDir = home.appendingPathComponent(".claude")
+        func json(in dir: URL) -> URL {
+            // Only an explicit CLAUDE_CONFIG_DIR keeps `.claude.json` inside the dir.
+            let inside = dir.appendingPathComponent(".claude.json")
+            if dir.standardizedFileURL == defaultDir.standardizedFileURL,
+               !FileManager.default.fileExists(atPath: inside.path) {
+                return home.appendingPathComponent(".claude.json")
+            }
+            return inside
+        }
+        switch self {
+        case let .file(path):
+            return json(in: URL(fileURLWithPath: path).deletingLastPathComponent())
+        case let .keychain(service):
+            let suffix = service.dropFirst(ClaudeKeychain.defaultService.count)
+            guard !suffix.isEmpty else { return home.appendingPathComponent(".claude.json") }
+            // `Claude Code-credentials-<first 8 hex of sha256(config dir)>`: find the dir.
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? []
+            for name in names where name == ".claude" || name.hasPrefix(".claude-") {
+                let dir = home.appendingPathComponent(name)
+                if "-" + Self.configDirHash(dir.path) == suffix {
+                    return json(in: dir)
+                }
+            }
+            return nil
+        }
+    }
+
+    static func configDirHash(_ path: String) -> String {
+        SHA256.hash(data: Data(path.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 public enum ClaudeKeychain {
@@ -78,6 +135,12 @@ public enum ClaudeKeychain {
         public let expiresAtMillis: Double?
         /// Plan of the signed-in organization as Claude Code records it ("team", "max", "pro", …).
         public let subscriptionType: String?
+
+        /// Short hash of the access token: changes on every re-login and token refresh, so a
+        /// cached organization is re-checked then. Never the token itself.
+        public var fingerprint: String {
+            SHA256.hash(data: Data(accessToken.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        }
     }
 
     public static func readAccessToken(

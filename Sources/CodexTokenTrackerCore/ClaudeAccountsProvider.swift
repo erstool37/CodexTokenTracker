@@ -96,6 +96,22 @@ public struct ClaudePublishedAccounts: Codable, Equatable, Sendable {
         self.publishedAt = publishedAt
         self.accounts = accounts
     }
+
+    /// One account per organization, the most recently fetched, in first-seen order.
+    public static func newestPerOrganization(_ accounts: [Account]) -> [Account] {
+        var order: [String] = []
+        var best: [String: Account] = [:]
+        for account in accounts {
+            let key = account.identity.organizationUUID
+            if let current = best[key] {
+                if account.fetchedAt > current.fetchedAt { best[key] = account }
+            } else {
+                order.append(key)
+                best[key] = account
+            }
+        }
+        return order.compactMap { best[$0] }
+    }
 }
 
 /// One account as the popover shows it, from this Mac or from a peer.
@@ -162,9 +178,22 @@ public enum ClaudeAccountMerger {
         return lhs.identity.label.localizedStandardCompare(rhs.identity.label) == .orderedAscending
     }
 
+    /// Short menu-bar tag for an account bucket: the team's name when short ("LAMP"), else its
+    /// initials; "P" for a personal plan.
+    public static func menuBarTag(bucketID: String, label: String) -> String {
+        guard bucketID.hasPrefix("claude-\(ClaudeAccountKind.team.rawValue)-") else { return "P" }
+        let name = label.components(separatedBy: " · ").first?.trimmingCharacters(in: .whitespaces) ?? ""
+        let words = name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        guard !words.isEmpty else { return "T" }
+        if words.count == 1 {
+            return String(words[0].prefix(4)).uppercased()
+        }
+        return String(words.compactMap(\.first).prefix(3)).uppercased()
+    }
+
     /// Combine the accounts into the single snapshot the Claude pane renders: one limit bucket
-    /// per account, labeled with its organization. Bucket ids start with `claude-team-` or
-    /// `claude-personal-`, which the menu bar uses to place team left and personal right.
+    /// per account, labeled with its organization, in display order (team first). Bucket ids
+    /// start with `claude-team-` or `claude-personal-`; the menu bar draws one block per bucket.
     public static func combinedSnapshot(
         _ entries: [ClaudeAccountEntry],
         now: Date,
@@ -233,6 +262,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     private var providers: [String: ClaudeUsageProvider] = [:]
     private var lastServiceScan: Date?
     private var identities: [String: CachedIdentity] = [:]
+    private var lastProfileAttempt: [String: Date] = [:]
     private var peerFiles: [String: ClaudePublishedAccounts] = [:]
     private var lastPeerFetch: Date?
     private var peerTask: Task<Void, Never>?
@@ -243,10 +273,13 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     private let serviceScanInterval: TimeInterval = 600
     private let peerFetchInterval: TimeInterval = 60
     private let identityRefreshInterval: TimeInterval = 6 * 3600
+    private let profileRetryInterval: TimeInterval = 600
 
     private struct CachedIdentity: Codable {
         var identity: ClaudeAccountIdentity
         var fetchedAt: TimeInterval
+        /// `Token.fingerprint` of the token the profile was read with; nil in older caches.
+        var tokenFingerprint: String?
     }
 
     public init(session: URLSession = .shared, supportDirectory: URL? = nil) {
@@ -275,17 +308,24 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
 
         let localProviders = currentProviders(now: now)
         var localEntries: [ClaudeAccountEntry] = []
+        var keptProviders: [ClaudeUsageProvider] = []
         var firstError: Error?
-        await withTaskGroup(of: (ClaudeAccountEntry?, Error?).self) { group in
+        await withTaskGroup(of: (ClaudeUsageProvider, ClaudeAccountEntry?, Error?).self) { group in
             for provider in localProviders {
-                group.addTask { await self.localEntry(for: provider, now: now) }
+                group.addTask {
+                    let (entry, error) = await self.localEntry(for: provider, now: now)
+                    return (provider, entry, error)
+                }
             }
-            for await (entry, error) in group {
-                if let entry { localEntries.append(entry) }
+            for await (provider, entry, error) in group {
+                if let entry {
+                    localEntries.append(entry)
+                    keptProviders.append(provider)
+                }
                 if firstError == nil, let error { firstError = error }
             }
         }
-        publish(now: now, providers: localProviders)
+        publish(now: now, providers: keptProviders)
 
         let peerEntries = lock.withLock { Array(peerFiles.values) }
             .filter { $0.machineID != machineID }
@@ -348,6 +388,14 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
             // reaches the screen through the error when nothing else does.
             return (nil, fetchError)
         }
+        // A credential left over from an earlier login (e.g. a keychain item after Claude Code
+        // moved to `.credentials.json`, or the org before a re-login) is not this Mac's account
+        // any more: neither shown nor published, so each Mac reports only what it is signed in to.
+        if let current = provider.source.currentOrganizationUUID(),
+           !identity.organizationUUID.hasPrefix("login:"),
+           current != identity.organizationUUID {
+            return (nil, nil)
+        }
         // A cached snapshot older than the last fetch attempt means the fetch failed; say why.
         let entry = ClaudeAccountEntry(
             identity: identity,
@@ -360,24 +408,36 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     }
 
     /// The organization behind a login, from `/api/oauth/profile`, cached on disk per login and
-    /// re-read every few hours or when Claude Code's recorded plan changes (a re-login).
+    /// re-read every few hours or when the token changes (a re-login or refresh). A token that
+    /// never changes (a dead leftover login) is retried at most every `profileRetryInterval`.
     private func identity(for provider: ClaudeUsageProvider, now: Date) async -> ClaudeAccountIdentity? {
         let service = provider.source.id
         let token = try? provider.readToken()
         let cached = lock.withLock { identities[service] } ?? loadIdentity(source: provider.source)
         if let cached,
            now.timeIntervalSince1970 - cached.fetchedAt < identityRefreshInterval,
-           token == nil || token?.subscriptionType == cached.identity.subscriptionType {
+           token == nil || token?.fingerprint == cached.tokenFingerprint {
             lock.withLock { identities[service] = cached }
             return cached.identity
         }
-        if let token, let fetched = await fetchProfile(token: token) {
-            let entry = CachedIdentity(identity: fetched, fetchedAt: now.timeIntervalSince1970)
+        let mayFetch = lock.withLock { () -> Bool in
+            if cached != nil, let last = lastProfileAttempt[service],
+               now.timeIntervalSince(last) < profileRetryInterval {
+                return false
+            }
+            lastProfileAttempt[service] = now
+            return true
+        }
+        if mayFetch, let token, let fetched = await fetchProfile(token: token) {
+            let entry = CachedIdentity(identity: fetched, fetchedAt: now.timeIntervalSince1970, tokenFingerprint: token.fingerprint)
             lock.withLock { identities[service] = entry }
             saveIdentity(entry, source: provider.source)
             return fetched
         }
-        if let cached { return cached.identity }
+        if let cached {
+            lock.withLock { identities[service] = cached }
+            return cached.identity
+        }
         // Profile unreachable and never cached: a provisional identity keeps the login on screen.
         // It is not published, since the other Mac couldn't match it to an organization.
         return token.map {
@@ -425,9 +485,13 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
 
     // MARK: Publishing for the other Mac
 
+    /// Publishes the current logins only, one account per organization (the newest usage) —
+    /// two logins of the same org on this Mac would otherwise both go out, and the peer could
+    /// pick the stale one.
     private func publish(now: Date, providers: [ClaudeUsageProvider]) {
         let accounts = providers.compactMap { provider -> ClaudePublishedAccounts.Account? in
             guard let identity = lock.withLock({ identities[provider.source.id]?.identity }),
+                  !identity.organizationUUID.hasPrefix("login:"),
                   let payload = provider.lastGoodPayload(),
                   let usage = String(data: payload.data, encoding: .utf8) else {
                 return nil
@@ -442,7 +506,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
             machineID: machineID,
             machineName: machineName,
             publishedAt: now.timeIntervalSince1970,
-            accounts: accounts
+            accounts: ClaudePublishedAccounts.newestPerOrganization(accounts)
         )
         guard let data = try? JSONEncoder().encode(file) else { return }
         try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
