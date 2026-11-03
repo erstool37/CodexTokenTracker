@@ -271,6 +271,22 @@ let personalIdentity = ClaudeAccountIdentity(
 expect(teamIdentity.kind == .team && teamIdentity.label == "LAMP · Team", "team org should label by name — got \(teamIdentity.label)")
 expect(personalIdentity.kind == .personal && personalIdentity.label == "Personal · Max 20x", "personal org should label by plan — got \(personalIdentity.label)")
 expect(ClaudeAccountIdentity(organizationUUID: "x", subscriptionType: "pro").label == "Personal · Pro", "plan falls back to the keychain subscription type")
+let ultraIdentity = ClaudeAccountIdentity(
+    organizationUUID: "org-personal", organizationType: "claude_max", subscriptionType: "max",
+    rateLimitTier: "default_claude_max_20x", planDisplayName: "Ultra"
+)
+expect(ultraIdentity.label == "Personal · Ultra", "the server's plan name wins over the tier — got \(ultraIdentity.label)")
+let ultraUsageJSON = Data(#"""
+{"five_hour": null,
+ "seven_day": {"utilization": 12.0, "resets_at": "2026-11-05T06:00:00+00:00"},
+ "limits": [
+  {"kind": "weekly_all", "group": "weekly", "percent": 12, "resets_at": "2026-11-05T06:00:00+00:00", "scope": null},
+  {"kind": "weekly_scoped", "group": "weekly", "percent": 0, "resets_at": "2026-11-05T06:00:00+00:00",
+   "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+ ]}
+"""#.utf8)
+let ultraSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: ultraUsageJSON, now: claudeNow)
+expect(ultraSnapshot.limits.first?.windows.map(\.label) == ["Weekly limit"], "a plan without a 5h window shows only weekly — got \(ultraSnapshot.limits.first?.windows.map(\.label) ?? [])")
 
 let olderTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow.addingTimeInterval(-600))
 let newerTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)

@@ -19,19 +19,25 @@ public struct ClaudeAccountIdentity: Codable, Equatable, Sendable {
     public var subscriptionType: String?
     /// e.g. "default_claude_max_5x".
     public var rateLimitTier: String?
+    /// `/api/oauth/profile` `organization.plan_display_name` — the plan's own marketing name
+    /// ("Ultra", "Max", …). Preferred over anything parsed from the tier, so a new or renamed
+    /// plan shows up correctly without an app change.
+    public var planDisplayName: String?
 
     public init(
         organizationUUID: String,
         organizationName: String? = nil,
         organizationType: String? = nil,
         subscriptionType: String? = nil,
-        rateLimitTier: String? = nil
+        rateLimitTier: String? = nil,
+        planDisplayName: String? = nil
     ) {
         self.organizationUUID = organizationUUID
         self.organizationName = organizationName
         self.organizationType = organizationType
         self.subscriptionType = subscriptionType
         self.rateLimitTier = rateLimitTier
+        self.planDisplayName = planDisplayName
     }
 
     public var kind: ClaudeAccountKind {
@@ -50,8 +56,11 @@ public struct ClaudeAccountIdentity: Codable, Equatable, Sendable {
         }
     }
 
-    /// "Max 5x", "Max 20x", "Pro" — from the rate-limit tier, else the plan type.
+    /// "Ultra", "Max 5x", "Pro" — the server's plan name, else the rate-limit tier, else the plan type.
     private var planName: String? {
+        if let name = planDisplayName?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            return name
+        }
         if let tier = rateLimitTier?.lowercased(), tier.contains("max") {
             if let multiplier = tier.split(separator: "_").last, multiplier.hasSuffix("x") {
                 return "Max \(multiplier)"
@@ -242,11 +251,16 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
 
     private let serviceScanInterval: TimeInterval = 600
     private let peerFetchInterval: TimeInterval = 60
-    private let identityRefreshInterval: TimeInterval = 6 * 3600
+    /// Short enough that a plan change (e.g. Max → Ultra) relabels within the hour.
+    private let identityRefreshInterval: TimeInterval = 3600
 
     private struct CachedIdentity: Codable {
         var identity: ClaudeAccountIdentity
         var fetchedAt: TimeInterval
+        /// Bumped when the profile fields we read change, so an older cache is re-fetched at once
+        /// instead of waiting out `identityRefreshInterval` (nil = written before versioning).
+        var schema: Int?
+        static let currentSchema = 2
     }
 
     public init(session: URLSession = .shared, supportDirectory: URL? = nil) {
@@ -366,13 +380,16 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
         let token = try? provider.readToken()
         let cached = lock.withLock { identities[service] } ?? loadIdentity(source: provider.source)
         if let cached,
+           cached.schema == CachedIdentity.currentSchema,
            now.timeIntervalSince1970 - cached.fetchedAt < identityRefreshInterval,
            token == nil || token?.subscriptionType == cached.identity.subscriptionType {
             lock.withLock { identities[service] = cached }
             return cached.identity
         }
         if let token, let fetched = await fetchProfile(token: token) {
-            let entry = CachedIdentity(identity: fetched, fetchedAt: now.timeIntervalSince1970)
+            let entry = CachedIdentity(
+                identity: fetched, fetchedAt: now.timeIntervalSince1970, schema: CachedIdentity.currentSchema
+            )
             lock.withLock { identities[service] = entry }
             saveIdentity(entry, source: provider.source)
             return fetched
@@ -399,6 +416,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
                 let name: String?
                 let organization_type: String?
                 let rate_limit_tier: String?
+                let plan_display_name: String?
             }
             let organization: Organization?
         }
@@ -415,7 +433,8 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
                 organizationName: organization.name,
                 organizationType: organization.organization_type,
                 subscriptionType: token.subscriptionType,
-                rateLimitTier: organization.rate_limit_tier
+                rateLimitTier: organization.rate_limit_tier,
+                planDisplayName: organization.plan_display_name
             )
         } catch {
             Self.log.error("claude profile fetch failed: \(error.localizedDescription, privacy: .public)")

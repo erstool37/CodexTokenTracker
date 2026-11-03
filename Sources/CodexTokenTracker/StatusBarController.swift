@@ -267,7 +267,8 @@ private extension LimitWarningLevel {
 
 /// Menu-bar summary, colored per provider: Codex monthly credits (blue) as one bar + number,
 /// then two Claude blocks (orange) — the team account left, the personal account right — each
-/// with 5h and weekly as two stacked bars + numbers. Bars fill with the share still left and
+/// with 5h and weekly as two stacked bars + numbers. A plan without a 5h window (e.g. Ultra)
+/// is detected from the usage response and drawn as one weekly bar instead. Bars fill with the share still left and
 /// numbers are % left, matching the popover. Drawn at display time so the text follows the menu
 /// bar's light/dark appearance.
 struct MenuBarBars {
@@ -278,6 +279,9 @@ struct MenuBarBars {
         var label: String?
         var sessionLeft: Int?
         var weeklyLeft: Int?
+        /// False when the account reports limits but none of them is a 5h window — the plan has
+        /// no 5h limit, so no 5h row is drawn. Unknown (no data yet) keeps the two-row layout.
+        var hasSessionLimit = true
     }
 
     var codexMonthlyLeft: Int?
@@ -292,10 +296,12 @@ struct MenuBarBars {
             guard let bucket = claude?.limits.first(where: { $0.id.hasPrefix("claude-\(kind)-") }) else {
                 return ClaudeAccountBars()
             }
+            let sessionLeft = left(bucket.windows, label: "5h limit")
             return ClaudeAccountBars(
                 label: bucket.label,
-                sessionLeft: left(bucket.windows, label: "5h limit"),
-                weeklyLeft: left(bucket.windows, label: "Weekly limit")
+                sessionLeft: sessionLeft,
+                weeklyLeft: left(bucket.windows, label: "Weekly limit"),
+                hasSessionLimit: bucket.windows.isEmpty || sessionLeft != nil
             )
         }
         codexMonthlyLeft = left(codex?.limits.flatMap(\.windows) ?? [], label: "Monthly credits")
@@ -311,7 +317,9 @@ struct MenuBarBars {
     var tooltip: String {
         func text(_ value: Int?) -> String { value.map { "\($0)% left" } ?? "–" }
         func claude(_ bars: ClaudeAccountBars, fallback: String) -> String {
-            "\(bars.label ?? fallback) 5h \(text(bars.sessionLeft)) · weekly \(text(bars.weeklyLeft))"
+            bars.hasSessionLimit
+                ? "\(bars.label ?? fallback) 5h \(text(bars.sessionLeft)) · weekly \(text(bars.weeklyLeft))"
+                : "\(bars.label ?? fallback) weekly \(text(bars.weeklyLeft))"
         }
         return [
             "Codex monthly \(text(codexMonthlyLeft))",
@@ -332,9 +340,15 @@ struct MenuBarBars {
             // Codex: one bar, vertically centred, larger number.
             Self.drawRow(value: codexMonthlyLeft, color: Self.codexColor, x: 0, midY: Self.height / 2,
                          barHeight: 4, fontSize: 11)
-            // Claude: team block, then personal block; each 5h on top, weekly below.
+            // Claude: team block, then personal block; each 5h on top, weekly below — or, for a
+            // plan without a 5h limit, a single weekly bar centred like the Codex one.
             for (index, account) in [claudeTeam, claudePersonal].enumerated() {
                 let x = (blockWidth + Self.blockGap) * CGFloat(index + 1)
+                guard account.hasSessionLimit else {
+                    Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: Self.height / 2,
+                                 barHeight: 4, fontSize: 11)
+                    continue
+                }
                 Self.drawRow(value: account.sessionLeft, color: Self.claudeColor, x: x, midY: 4.5,
                              barHeight: 3, fontSize: 8.5)
                 Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: 13.5,
