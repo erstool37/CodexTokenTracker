@@ -10,7 +10,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Retry-After, so quick retries only re-trip it. Cadence is the provider's 60s throttle plus
     // the store's 3-minute ticker; the provider serves cached data in between.
     // Claude covers every account: this Mac's Claude Code logins plus the other Mac's, over SSH.
-    private let claudeProvider = ClaudeAccountsProvider()
+    // Transcript totals come from a child copy of this executable, so the JSON parsing of
+    // gigabytes of transcripts never stays in the menu bar app's memory.
+    private let claudeProvider = ClaudeAccountsProvider(localStatsLoader: {
+        guard let executable = Bundle.main.executableURL else { return nil }
+        return await ClaudeTranscriptStatsCommand.stats(executable: executable)
+    })
     private lazy var claudeStore = StatusStore(
         provider: claudeProvider,
         tokenStatsLoader: { _, _ in nil },

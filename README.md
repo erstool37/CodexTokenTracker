@@ -41,7 +41,9 @@ The Claude pane and menu bar show every Claude account, team left and personal r
 - every Claude Code login on this Mac: the default keychain item `Claude Code-credentials`, plus `Claude Code-credentials-<sha256(dir)[:8]>` for each `CLAUDE_CONFIG_DIR=<dir> claude` login, plus the plaintext `~/.claude/.credentials.json` / `~/.claude-*/.credentials.json` Claude Code writes when the keychain is locked (a `/login` over SSH);
 - the other Mac: each app writes its own logins' usage to `~/Library/Application Support/CodexTokenTracker/claude-accounts-published.json` (usage and organization only, no tokens) and reads the peer's copy with `ssh <host> cat …`.
 
-Peers are the SSH aliases in `claude-peers.txt` in the same folder (one per line), defaulting to `home` and `pro`. A Mac skips its own file by `machine-id`. Accounts are matched by organization UUID, so the same team login on both Macs shows once. A login's numbers stay fresh only while Claude Code on that machine keeps its token refreshed; older data is labeled "as of <time>".
+Peers are the SSH aliases in `claude-peers.txt` in the same folder (one per line), defaulting to `home` and `pro`. A Mac skips its own file by `machine-id`, and drops a cached copy from an alias that now reaches itself. Accounts are matched by organization UUID, so the same team login on both Macs shows once. A login's numbers stay fresh only while Claude Code on that machine keeps its token refreshed; older data is labeled "as of <time>".
+
+The Claude token totals (Today / 7 days / 28 days) come from this Mac's `~/.claude/projects` transcripts. The app does not parse them itself: at most every 5 minutes it runs a short-lived copy of its own executable (`CodexTokenTracker --claude-transcript-stats`), which prints the totals and exits, so parsing gigabytes of JSON never stays in the menu bar app's memory. The child keeps per-file progress in `claude-transcript-cache.json` (token counts and hashed response ids only, no text), so each pass reads only the bytes appended since the last one.
 
 ## Privacy
 

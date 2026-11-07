@@ -245,12 +245,16 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     private var peerFiles: [String: ClaudePublishedAccounts] = [:]
     private var lastPeerFetch: Date?
     private var peerTask: Task<Void, Never>?
+    private let localStatsLoader: @Sendable () async -> TokenUsageStats?
     private var latestLocalStats: TokenUsageStats?
     private var localStatsTask: Task<Void, Never>?
+    private var lastLocalStatsRun: Date?
     private var peerUpdateHandler: (@Sendable () -> Void)?
 
     private let serviceScanInterval: TimeInterval = 600
     private let peerFetchInterval: TimeInterval = 60
+    /// Transcript totals are a summary card, not a limit; a few minutes old is fine.
+    private let localStatsInterval: TimeInterval = 300
     /// Short enough that a plan change (e.g. Max → Ultra) relabels within the hour.
     private let identityRefreshInterval: TimeInterval = 3600
 
@@ -263,15 +267,25 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
         static let currentSchema = 2
     }
 
-    public init(session: URLSession = .shared, supportDirectory: URL? = nil) {
+    /// `localStatsLoader` produces this Mac's transcript totals; the app passes one that scans in a
+    /// child process (`ClaudeTranscriptStatsCommand`), the default scans in this process.
+    public init(
+        session: URLSession = .shared,
+        supportDirectory: URL? = nil,
+        localStatsLoader: (@Sendable () async -> TokenUsageStats?)? = nil
+    ) {
         self.session = session
         let directory = supportDirectory ?? AccountTokenUsageLedgerStore.defaultLedgerURL().deletingLastPathComponent()
         self.supportDirectory = directory
+        self.localStatsLoader = localStatsLoader ?? {
+            ClaudeTokenUsageProvider.load(now: Date(), cacheURL: ClaudeTokenUsageProvider.defaultCacheURL())
+        }
         machineID = Self.loadOrCreateMachineID(in: directory)
         machineName = Self.shortMachineName(Host.current().localizedName ?? ProcessInfo.processInfo.hostName)
         for host in peerHosts() {
             if let data = try? Data(contentsOf: peerCacheURL(host: host)),
-               let file = try? JSONDecoder().decode(ClaudePublishedAccounts.self, from: data) {
+               let file = try? JSONDecoder().decode(ClaudePublishedAccounts.self, from: data),
+               file.machineID != machineID {
                 peerFiles[host] = file
             }
         }
@@ -323,7 +337,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
         if entries.allSatisfy({ $0.snapshot == nil }), let firstError {
             throw firstError
         }
-        return ClaudeAccountMerger.combinedSnapshot(entries, now: now, localStats: currentLocalStats())
+        return ClaudeAccountMerger.combinedSnapshot(entries, now: now, localStats: currentLocalStats(now: now))
     }
 
     // MARK: Local logins
@@ -445,23 +459,28 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     // MARK: Publishing for the other Mac
 
     private func publish(now: Date, providers: [ClaudeUsageProvider]) {
-        let accounts = providers.compactMap { provider -> ClaudePublishedAccounts.Account? in
+        // Two logins of one organization (keychain and `.credentials.json`) publish once, newest.
+        var newest: [String: ClaudePublishedAccounts.Account] = [:]
+        for provider in providers {
             guard let identity = lock.withLock({ identities[provider.source.id]?.identity }),
                   let payload = provider.lastGoodPayload(),
                   let usage = String(data: payload.data, encoding: .utf8) else {
-                return nil
+                continue
             }
-            return ClaudePublishedAccounts.Account(
+            let account = ClaudePublishedAccounts.Account(
                 identity: identity,
                 fetchedAt: payload.savedAt.timeIntervalSince1970,
                 usage: usage
             )
+            if account.fetchedAt > newest[identity.organizationUUID]?.fetchedAt ?? -.infinity {
+                newest[identity.organizationUUID] = account
+            }
         }
         let file = ClaudePublishedAccounts(
             machineID: machineID,
             machineName: machineName,
             publishedAt: now.timeIntervalSince1970,
-            accounts: accounts
+            accounts: newest.values.sorted { $0.identity.organizationUUID < $1.identity.organizationUUID }
         )
         guard let data = try? JSONEncoder().encode(file) else { return }
         try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -513,7 +532,16 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
               let file = try? JSONDecoder().decode(ClaudePublishedAccounts.self, from: data) else {
             return
         }
-        guard file.machineID != machineID else { return }
+        guard file.machineID != machineID else {
+            // The alias reaches this Mac (e.g. `home` on the Mac mini). Drop the copy cached while
+            // it reached another Mac, so a retired machine's numbers don't linger.
+            let handler = lock.withLock { () -> (@Sendable () -> Void)? in
+                peerFiles.removeValue(forKey: host) == nil ? nil : peerUpdateHandler
+            }
+            try? FileManager.default.removeItem(at: peerCacheURL(host: host))
+            handler?()
+            return
+        }
         let handler = lock.withLock { () -> (@Sendable () -> Void)? in
             let changed = peerFiles[host]?.accounts != file.accounts
             peerFiles[host] = file
@@ -525,47 +553,32 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
 
     /// `ssh <host> cat …/claude-accounts-published.json`, non-interactive and time-boxed.
     static func readRemotePublishedFile(host: String, timeout: TimeInterval = 15) async -> Data? {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                process.arguments = [
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=5",
-                    "-o", "ServerAliveInterval=5",
-                    "-o", "ServerAliveCountMax=1",
-                    host,
-                    "cat \"$HOME/Library/Application Support/CodexTokenTracker/\(publishedFileName)\"",
-                ]
-                let stdout = Pipe()
-                process.standardOutput = stdout
-                process.standardError = FileHandle.nullDevice
-                process.standardInput = FileHandle.nullDevice
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
-                let data = stdout.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                deadline.cancel()
-                continuation.resume(returning: process.terminationStatus == 0 && !data.isEmpty ? data : nil)
-            }
-        }
+        await ProcessOutput.run(
+            executable: URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments: [
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                "-o", "ServerAliveInterval=5",
+                "-o", "ServerAliveCountMax=1",
+                host,
+                "cat \"$HOME/Library/Application Support/CodexTokenTracker/\(publishedFileName)\"",
+            ],
+            timeout: timeout
+        )
     }
 
     // MARK: Local transcript stats
 
     /// Latest finished transcript totals of this Mac (Fable excluded); starts a background rescan
-    /// when none is running. The first scan reads gigabytes, so it never delays the limits.
-    private func currentLocalStats() -> TokenUsageStats? {
+    /// when none is running and the last one is a few minutes old. The first scan reads
+    /// gigabytes, so it never delays the limits.
+    private func currentLocalStats(now: Date) -> TokenUsageStats? {
         lock.withLock {
-            if localStatsTask == nil {
-                localStatsTask = Task.detached(priority: .utility) { [weak self] in
-                    let stats = ClaudeTokenUsageProvider.load(now: Date())
+            let due = lastLocalStatsRun.map { now.timeIntervalSince($0) >= localStatsInterval } ?? true
+            if localStatsTask == nil, due {
+                lastLocalStatsRun = now
+                localStatsTask = Task.detached(priority: .utility) { [weak self, localStatsLoader] in
+                    let stats = await localStatsLoader()
                     guard let self else { return }
                     self.lock.withLock {
                         if let stats { self.latestLocalStats = stats }

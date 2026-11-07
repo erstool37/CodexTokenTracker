@@ -21,11 +21,14 @@ public struct LastGoodPayloadStore: Sendable {
         try? data.write(to: url, options: .atomic)
     }
 
-    /// The saved body and when it was saved (the file's modification time).
+    /// The saved body and when it was saved (the file's modification time). Read from the file
+    /// system each time, not via `URL.resourceValues`: those are cached on the URL, so a long-lived
+    /// store kept reporting the first modification time it saw and the other Mac took fresh
+    /// numbers for days-old ones.
     public func load() -> (data: Data, savedAt: Date)? {
         guard
             let data = try? Data(contentsOf: url),
-            let savedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            let savedAt = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
         else {
             return nil
         }

@@ -230,6 +230,75 @@ let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
 expect(claudeLabels == ["5h limit", "Weekly limit"], "limits[] drives windows adaptively, Fable excluded — got \(claudeLabels)")
 expect(claudeSnapshot.limits[0].windows[0].percentLeft == 89, "session percent left should map from `percent`")
 expect(ClaudeTokenUsageProvider.isFable("claude-fable-5-1") && !ClaudeTokenUsageProvider.isFable("claude-opus-5-5"), "Fable models are recognized for exclusion")
+
+// Transcript cache: a grown file is read from where the last pass stopped, a last line without
+// its newline waits for it, a response replayed in another file counts once, and a replaced file
+// is read again from the start. Cached passes match a pass without the cache.
+let transcriptRoot = FileManager.default.temporaryDirectory
+    .appendingPathComponent("CodexTokenTrackerChecks-\(UUID().uuidString)", isDirectory: true)
+let transcriptProjects = transcriptRoot.appendingPathComponent("projects", isDirectory: true)
+let transcriptProject = transcriptProjects.appendingPathComponent("-Users-me-repo", isDirectory: true)
+try FileManager.default.createDirectory(at: transcriptProject, withIntermediateDirectories: true)
+let transcriptCacheURL = transcriptRoot.appendingPathComponent("claude-transcript-cache.json")
+let transcriptNow = Date()
+let transcriptStamp = ISO8601DateFormatter().string(from: transcriptNow.addingTimeInterval(-3600))
+func assistantLine(_ requestID: String, input: Int, model: String = "claude-opus-5-5") -> String {
+    #"{"type":"assistant","timestamp":"\#(transcriptStamp)","requestId":"\#(requestID)","message":{"id":"msg-\#(requestID)","model":"\#(model)","usage":{"input_tokens":\#(input),"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+}
+func transcriptTotals() -> (cached: TokenUsagePeriodStats?, uncached: TokenUsagePeriodStats?) {
+    (
+        ClaudeTokenUsageProvider.load(now: transcriptNow, projectsDir: transcriptProjects, cacheURL: transcriptCacheURL)?.monthly,
+        ClaudeTokenUsageProvider.load(now: transcriptNow, projectsDir: transcriptProjects)?.monthly
+    )
+}
+let transcriptA = transcriptProject.appendingPathComponent("a.jsonl")
+try Data((
+    [
+        assistantLine("r1", input: 10),
+        assistantLine("r1", input: 10), // second content block of the same response
+        assistantLine("r2", input: 1000, model: "claude-fable-5-1"),
+        #"{"type":"user","timestamp":"\#(transcriptStamp)","message":{"role":"user","content":"hi"}}"#,
+    ].joined(separator: "\n") + "\n"
+).utf8).write(to: transcriptA)
+var totals = transcriptTotals()
+expect(totals.cached?.sessionCount == 1 && totals.cached?.usage.inputTokens == 10, "one response, Fable excluded — got \(String(describing: totals.cached))")
+try appendLine(assistantLine("r3", input: 100), to: transcriptA)
+let partialHandle = try FileHandle(forWritingTo: transcriptA)
+try partialHandle.seekToEnd()
+partialHandle.write(Data(assistantLine("r4", input: 1000).utf8)) // no newline yet: still being written
+try partialHandle.close()
+totals = transcriptTotals()
+expect(totals.cached?.sessionCount == 2 && totals.cached?.usage.inputTokens == 110, "appended line counted, unterminated line not yet — got \(String(describing: totals.cached))")
+expect(totals.cached == totals.uncached, "cached pass matches a full pass after an append")
+let newlineHandle = try FileHandle(forWritingTo: transcriptA)
+try newlineHandle.seekToEnd()
+newlineHandle.write(Data("\n".utf8))
+try newlineHandle.close()
+totals = transcriptTotals()
+expect(totals.cached?.sessionCount == 3 && totals.cached?.usage.inputTokens == 1110, "a line counts once its newline arrives — got \(String(describing: totals.cached))")
+try Data((assistantLine("r3", input: 100) + "\n" + assistantLine("r5", input: 5) + "\n").utf8)
+    .write(to: transcriptProject.appendingPathComponent("b.jsonl"))
+totals = transcriptTotals()
+expect(totals.cached?.sessionCount == 4 && totals.cached?.usage.inputTokens == 1115, "a response replayed in a resumed transcript counts once — got \(String(describing: totals.cached))")
+expect(totals.cached == totals.uncached, "cached pass matches a full pass across files")
+try Data((assistantLine("r6", input: 7) + "\n").utf8).write(to: transcriptA, options: .atomic)
+totals = transcriptTotals()
+expect(totals.cached?.sessionCount == 3 && totals.cached?.usage.inputTokens == 112, "a replaced transcript is read from the start — got \(String(describing: totals.cached))")
+expect(totals.cached == totals.uncached, "cached pass matches a full pass after a rewrite")
+let transcriptStats = ClaudeTokenUsageProvider.load(now: transcriptNow, projectsDir: transcriptProjects, cacheURL: transcriptCacheURL)
+let transcriptStatsRoundTrip = try JSONDecoder().decode(TokenUsageStats.self, from: JSONEncoder().encode(transcriptStats))
+expect(transcriptStatsRoundTrip == transcriptStats, "transcript stats survive the trip from the scanning child process")
+
+// The last good payload reports each save's own time, so the other Mac sees fresh numbers as fresh.
+let lastGoodURL = transcriptRoot.appendingPathComponent("claude-usage.json")
+let lastGoodStore = LastGoodPayloadStore(url: lastGoodURL)
+lastGoodStore.save(Data("{}".utf8))
+try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000_000)], ofItemAtPath: lastGoodURL.path)
+expect(lastGoodStore.load()?.savedAt == Date(timeIntervalSince1970: 1_000_000), "saved time is the file's modification time")
+lastGoodStore.save(Data(#"{"a":1}"#.utf8))
+try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2_000_000)], ofItemAtPath: lastGoodURL.path)
+expect(lastGoodStore.load()?.savedAt == Date(timeIntervalSince1970: 2_000_000), "a later save reports its own time, not the first one read")
+try? FileManager.default.removeItem(at: transcriptRoot)
 expect(claudeSnapshot.limits[0].creditsText == nil, "disabled spend/extra_usage should show no credits line")
 
 // When `limits[]` is absent, the legacy top-level fields still render (backward compatibility).

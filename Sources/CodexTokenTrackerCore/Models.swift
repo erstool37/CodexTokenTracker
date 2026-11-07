@@ -146,7 +146,7 @@ public enum TrackerLoadState: Equatable, Sendable {
     case failed(previous: CodexStatusSnapshot?, message: String)
 }
 
-public struct TokenUsageStats: Equatable, Sendable {
+public struct TokenUsageStats: Codable, Equatable, Sendable {
     public var today: TokenUsagePeriodStats
     public var weekly: TokenUsagePeriodStats
     public var monthly: TokenUsagePeriodStats
@@ -178,7 +178,7 @@ public struct TokenUsageStats: Equatable, Sendable {
     }
 }
 
-public struct TokenUsagePeriodStats: Equatable, Sendable {
+public struct TokenUsagePeriodStats: Codable, Equatable, Sendable {
     public var label: String
     public var sessionCount: Int
     public var countLabel: String

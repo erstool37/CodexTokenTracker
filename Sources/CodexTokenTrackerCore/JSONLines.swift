@@ -4,11 +4,24 @@ enum JSONLines {
     /// Streams a file line by line in 1 MB chunks. Newlines are found with `memchr` and, when a
     /// `marker` is given, lines without it are skipped with `memmem` before any `Data` is built,
     /// so multi-gigabyte transcript folders scan quickly and in bounded memory.
-    static func forEach(in fileURL: URL, containing marker: [UInt8]? = nil, _ body: (Data) -> Void) {
+    ///
+    /// Reading starts at byte `offset`; the result is the offset just past the last newline, where
+    /// the next read of the same append-only file resumes. A trailing line without a newline is
+    /// still being written, so it is left for that next read (nil when the file can't be opened).
+    @discardableResult
+    static func forEach(
+        in fileURL: URL,
+        from offset: UInt64 = 0,
+        containing marker: [UInt8]? = nil,
+        _ body: (Data) -> Void
+    ) -> UInt64? {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
-            return
+            return nil
         }
         defer { try? handle.close() }
+        if offset > 0 {
+            guard (try? handle.seek(toOffset: offset)) != nil else { return nil }
+        }
 
         let marker = marker?.isEmpty == true ? nil : marker
         func emit(_ start: UnsafePointer<UInt8>, _ count: Int) {
@@ -21,8 +34,15 @@ enum JSONLines {
 
         // Holds the unfinished tail of the previous chunk plus the new chunk.
         var buffer: [UInt8] = []
+        var completeEnd = offset
         while true {
-            let chunk: Data? = autoreleasepool { try? handle.read(upToCount: 1 << 20) }
+            let chunk: Data?
+            do {
+                chunk = try autoreleasepool { try handle.read(upToCount: 1 << 20) }
+            } catch {
+                // A read error is not the end of the file: fail, so the caller retries the range.
+                return nil
+            }
             guard let chunk, !chunk.isEmpty else { break }
             // The carried-over tail has no newline, so the search resumes at the new bytes.
             var searchFrom = buffer.count
@@ -39,10 +59,9 @@ enum JSONLines {
                 }
             }
             buffer.removeFirst(consumed)
+            completeEnd += UInt64(consumed)
         }
-        buffer.withUnsafeBufferPointer { bytes in
-            if let base = bytes.baseAddress { emit(base, bytes.count) }
-        }
+        return completeEnd
     }
 
     // ISO8601DateFormatter is thread-safe; building one per line dominated the old scan's profile.
@@ -60,62 +79,5 @@ enum JSONLines {
 
     static func parseTimestamp(_ raw: String) -> Date? {
         fractionalFormatter.date(from: raw) ?? plainFormatter.date(from: raw)
-    }
-}
-
-/// Per-file parse cache keyed by path and invalidated by (mtime, size). Files that drop out of the
-/// window are evicted on each pass.
-final class FileRecordCache<Record: Sendable>: @unchecked Sendable {
-    private struct Entry {
-        var modifiedAt: Date
-        var size: Int
-        var records: [Record]
-    }
-
-    private let lock = NSLock()
-    private var entries: [String: Entry] = [:]
-
-    func records(under roots: [URL], modifiedSince cutoff: Date, parse: (URL) -> [Record]) -> [Record] {
-        var seen = Set<String>()
-        var result: [Record] = []
-        for root in roots {
-            guard let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
-            ) else {
-                continue
-            }
-            for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
-                guard
-                    let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
-                    values.isRegularFile != false,
-                    let modifiedAt = values.contentModificationDate,
-                    modifiedAt >= cutoff,
-                    seen.insert(fileURL.path).inserted
-                else {
-                    continue
-                }
-                let size = values.fileSize ?? 0
-                let cached: [Record]? = lock.withLock {
-                    guard let entry = entries[fileURL.path], entry.modifiedAt == modifiedAt, entry.size == size else {
-                        return nil
-                    }
-                    return entry.records
-                }
-                if let cached {
-                    result.append(contentsOf: cached)
-                    continue
-                }
-                let parsed = autoreleasepool { parse(fileURL) }
-                lock.withLock {
-                    entries[fileURL.path] = Entry(modifiedAt: modifiedAt, size: size, records: parsed)
-                }
-                result.append(contentsOf: parsed)
-            }
-        }
-        lock.withLock {
-            entries = entries.filter { seen.contains($0.key) }
-        }
-        return result
     }
 }
