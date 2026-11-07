@@ -608,7 +608,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
         return id
     }
 
-    /// "Jongwon’s MacBook Air" → "MacBook Air".
+    /// "Jongwon’s Mac Mini" → "Mac Mini".
     static func shortMachineName(_ name: String) -> String {
         for marker in ["’s ", "'s "] {
             if let range = name.range(of: marker) {

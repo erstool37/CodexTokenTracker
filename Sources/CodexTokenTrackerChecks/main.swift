@@ -292,15 +292,15 @@ let olderTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now
 let newerTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
 let personalSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeLegacyJSON, now: claudeNow)
 let mergedAccounts = ClaudeAccountMerger.merge([
-    ClaudeAccountEntry(identity: personalIdentity, snapshot: personalSnapshot, machineName: "MacBook Air", isLocal: false),
+    ClaudeAccountEntry(identity: personalIdentity, snapshot: personalSnapshot, machineName: "Mac mini", isLocal: false),
     ClaudeAccountEntry(identity: teamIdentity, snapshot: olderTeam, machineName: "MacBook Pro", isLocal: true),
-    ClaudeAccountEntry(identity: teamIdentity, snapshot: newerTeam, machineName: "MacBook Air", isLocal: false),
+    ClaudeAccountEntry(identity: teamIdentity, snapshot: newerTeam, machineName: "Mac mini", isLocal: false),
 ])
 expect(mergedAccounts.map(\.identity.organizationUUID) == ["org-team", "org-personal"], "one entry per org, team first")
 expect(mergedAccounts[0].snapshot?.refreshedAt == claudeNow, "the newest report of an org wins")
 let combined = ClaudeAccountMerger.combinedSnapshot(mergedAccounts, now: claudeNow, localStats: nil)
 expect(combined.limits.map(\.id) == ["claude-team-org-team", "claude-personal-org-personal"], "one bucket per account, kind in the id")
-expect(combined.limits[1].statusText == "via MacBook Air", "peer data should say which Mac it came from — got \(combined.limits[1].statusText ?? "nil")")
+expect(combined.limits[1].statusText == "via Mac mini", "peer data should say which Mac it came from — got \(combined.limits[1].statusText ?? "nil")")
 expect(combined.limits[1].windows.map(\.label) == ["5h limit", "Weekly limit"], "each account keeps its own windows")
 let missing = ClaudeAccountMerger.combinedSnapshot(
     [ClaudeAccountEntry(identity: personalIdentity, snapshot: nil, machineName: "MacBook Pro", isLocal: true, errorMessage: "Sign in to Claude Code")],
