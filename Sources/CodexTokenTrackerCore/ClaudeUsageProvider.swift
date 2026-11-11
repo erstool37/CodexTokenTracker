@@ -438,9 +438,9 @@ public enum ClaudeUsageMapper {
         guard let limits else { return [] }
         return limits.enumerated().compactMap { index, limit in
             guard let usedPercent = limit.usedPercent else { return nil }
+            // Per-model windows (e.g. "Weekly · Fable") show in the popover; the menu bar picks
+            // only the unscoped 5h and weekly windows by label.
             let model = limit.scope?.model?.display_name
-            // Fable usage is deliberately not surfaced.
-            if let model, ClaudeTokenUsageProvider.isFable(model) { return nil }
             let idParts = ["claude", limit.kind ?? limit.group, model]
                 .compactMap { $0 }
                 .map { $0.replacingOccurrences(of: " ", with: "-").lowercased() }

@@ -43,6 +43,8 @@ The Claude pane and menu bar show every Claude account, team left and personal r
 
 Peers are the SSH aliases in `claude-peers.txt` in the same folder (one per line), defaulting to `home` and `pro`. A Mac skips its own file by `machine-id`, and drops a cached copy from an alias that now reaches itself. Accounts are matched by organization UUID, so the same team login on both Macs shows once. A login's numbers stay fresh only while Claude Code on that machine keeps its token refreshed; older data is labeled "as of <time>".
 
+Each account's popover card also lists per-model windows such as "Weekly · Fable"; the menu bar keeps only the 5h and weekly bars. Every change in an account's Fable percentage is appended to `fable-usage-history.jsonl` (time, account, percent used, reset) in the same folder, as a lasting record.
+
 The Claude token totals (Today / 7 days / 28 days) come from this Mac's `~/.claude/projects` transcripts. The app does not parse them itself: at most every 5 minutes it runs a short-lived copy of its own executable (`CodexTokenTracker --claude-transcript-stats`), which prints the totals and exits, so parsing gigabytes of JSON never stays in the menu bar app's memory. The child keeps per-file progress in `claude-transcript-cache.json` (token counts and hashed response ids only, no text), so each pass reads only the bytes appended since the last one.
 
 ## Privacy

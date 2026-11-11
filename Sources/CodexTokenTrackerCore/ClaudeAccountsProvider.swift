@@ -222,6 +222,80 @@ public enum ClaudeAccountMerger {
     }
 }
 
+/// A running record of each account's Fable allowance: one JSON line in
+/// `fable-usage-history.jsonl` whenever an account's Fable percentage or reset changes, so the
+/// numbers outlive the model's weekly window.
+public final class ClaudeFableUsageLog: @unchecked Sendable {
+    public struct Record: Codable, Equatable, Sendable {
+        /// When the usage was fetched (ISO 8601).
+        public var at: String
+        public var account: String
+        public var organizationUUID: String
+        public var window: String
+        public var percentUsed: Double
+        public var resets: String?
+        public var machine: String
+    }
+
+    public let url: URL
+    private let lock = NSLock()
+    private var last: [String: Record] = [:]
+
+    public init(url: URL) {
+        self.url = url
+        let decoder = JSONDecoder()
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        for line in text.split(whereSeparator: \.isNewline) {
+            if let record = try? decoder.decode(Record.self, from: Data(line.utf8)) {
+                last[record.organizationUUID] = record
+            }
+        }
+    }
+
+    /// Appends a line per account whose Fable window changed since its last line. Returns them.
+    @discardableResult
+    public func record(_ entries: [ClaudeAccountEntry]) -> [Record] {
+        let formatter = ISO8601DateFormatter()
+        let fresh: [Record] = entries.compactMap { entry in
+            guard let snapshot = entry.snapshot,
+                  let window = snapshot.limits.flatMap(\.windows).first(where: { ClaudeTokenUsageProvider.isFable($0.label) })
+            else { return nil }
+            return Record(
+                at: formatter.string(from: snapshot.refreshedAt),
+                account: entry.identity.label,
+                organizationUUID: entry.identity.organizationUUID,
+                window: window.label,
+                percentUsed: window.percentUsed,
+                resets: window.resetsAtText,
+                machine: entry.machineName
+            )
+        }
+        let changed = lock.withLock { () -> [Record] in
+            let changed = fresh.filter { record in
+                guard let previous = last[record.organizationUUID] else { return true }
+                return previous.percentUsed != record.percentUsed || previous.resets != record.resets
+            }
+            for record in changed { last[record.organizationUUID] = record }
+            return changed
+        }
+        guard !changed.isEmpty else { return [] }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let lines = changed.compactMap { try? encoder.encode($0) }
+            .map { String(decoding: $0, as: UTF8.self) + "\n" }
+            .joined()
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            handle.write(Data(lines.utf8))
+            try? handle.close()
+        } else {
+            try? Data(lines.utf8).write(to: url, options: .atomic)
+        }
+        return changed
+    }
+}
+
 /// All Claude accounts, on any Mac: every Claude Code login on this machine (the default one and
 /// one per `CLAUDE_CONFIG_DIR`), plus whatever the other Macs publish, read over SSH. Each login's
 /// usage is fetched only by the Mac that holds it, then shared — so a team login on one Mac and a
@@ -237,6 +311,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
     private let supportDirectory: URL
     private let machineID: String
     private let machineName: String
+    private let fableLog: ClaudeFableUsageLog
 
     private let lock = NSLock()
     private var providers: [String: ClaudeUsageProvider] = [:]
@@ -277,6 +352,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
         self.session = session
         let directory = supportDirectory ?? AccountTokenUsageLedgerStore.defaultLedgerURL().deletingLastPathComponent()
         self.supportDirectory = directory
+        fableLog = ClaudeFableUsageLog(url: directory.appendingPathComponent("fable-usage-history.jsonl"))
         self.localStatsLoader = localStatsLoader ?? {
             ClaudeTokenUsageProvider.load(now: Date(), cacheURL: ClaudeTokenUsageProvider.defaultCacheURL())
         }
@@ -334,6 +410,7 @@ public final class ClaudeAccountsProvider: StatusProviding, @unchecked Sendable 
             }
 
         let entries = ClaudeAccountMerger.merge(localEntries + peerEntries)
+        fableLog.record(entries)
         if entries.allSatisfy({ $0.snapshot == nil }), let firstError {
             throw firstError
         }

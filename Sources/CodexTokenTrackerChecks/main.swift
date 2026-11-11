@@ -227,7 +227,7 @@ let claudeAdaptiveJSON = """
 let claudeSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
 expect(claudeSnapshot.limits.count == 1, "Claude maps to a single bucket")
 let claudeLabels = claudeSnapshot.limits[0].windows.map(\.label)
-expect(claudeLabels == ["5h limit", "Weekly limit"], "limits[] drives windows adaptively, Fable excluded — got \(claudeLabels)")
+expect(claudeLabels == ["5h limit", "Weekly limit", "Weekly · Fable"], "limits[] drives windows adaptively, per-model Fable window included — got \(claudeLabels)")
 expect(claudeSnapshot.limits[0].windows[0].percentLeft == 89, "session percent left should map from `percent`")
 expect(ClaudeTokenUsageProvider.isFable("claude-fable-5-1") && !ClaudeTokenUsageProvider.isFable("claude-opus-5-5"), "Fable models are recognized for exclusion")
 
@@ -355,7 +355,7 @@ let ultraUsageJSON = Data(#"""
  ]}
 """#.utf8)
 let ultraSnapshot = try ClaudeUsageMapper.snapshot(fromJSON: ultraUsageJSON, now: claudeNow)
-expect(ultraSnapshot.limits.first?.windows.map(\.label) == ["Weekly limit"], "a plan without a 5h window shows only weekly — got \(ultraSnapshot.limits.first?.windows.map(\.label) ?? [])")
+expect(ultraSnapshot.limits.first?.windows.map(\.label) == ["Weekly limit", "Weekly · Fable"], "a plan without a 5h window shows weekly and its Fable share — got \(ultraSnapshot.limits.first?.windows.map(\.label) ?? [])")
 
 let olderTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow.addingTimeInterval(-600))
 let newerTeam = try ClaudeUsageMapper.snapshot(fromJSON: claudeAdaptiveJSON, now: claudeNow)
@@ -936,5 +936,24 @@ expect(
         == "https://chatgpt.com/backend-api/accounts/acct-1/spend-controls/current-user/monthly-usage?supports_usage_limit_modes=true",
     "the endpoint matches the one the Codex desktop app calls"
 )
+
+// Fable record: a line per account when its Fable share changes, none when it doesn't, and the
+// last known value survives a restart (a new log over the same file).
+let fableLogURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("CodexTokenTrackerChecks-fable-\(UUID().uuidString).jsonl")
+let fableEntry = ClaudeAccountEntry(identity: ultraIdentity, snapshot: ultraSnapshot, machineName: "Mac mini", isLocal: false)
+let fableLog = ClaudeFableUsageLog(url: fableLogURL)
+let firstFable = fableLog.record([fableEntry])
+expect(firstFable.count == 1 && firstFable[0].window == "Weekly · Fable" && firstFable[0].account == "Personal · Ultra", "the first Fable reading is recorded — got \(firstFable)")
+expect(fableLog.record([fableEntry]).isEmpty, "an unchanged Fable reading adds no line")
+expect(ClaudeFableUsageLog(url: fableLogURL).record([fableEntry]).isEmpty, "the last reading is remembered across restarts")
+let fableUsedMore = try ClaudeUsageMapper.snapshot(
+    fromJSON: Data(String(decoding: ultraUsageJSON, as: UTF8.self).replacingOccurrences(of: #""percent": 0"#, with: #""percent": 7"#).utf8),
+    now: claudeNow
+)
+let secondFable = fableLog.record([ClaudeAccountEntry(identity: ultraIdentity, snapshot: fableUsedMore, machineName: "Mac mini", isLocal: false)])
+expect(secondFable.first?.percentUsed == 7, "a changed Fable reading is recorded — got \(secondFable)")
+expect((try? String(contentsOf: fableLogURL, encoding: .utf8))?.split(separator: "\n").count == 2, "the log holds one line per change")
+try? FileManager.default.removeItem(at: fableLogURL)
 
 print("CodexTokenTracker checks passed")
