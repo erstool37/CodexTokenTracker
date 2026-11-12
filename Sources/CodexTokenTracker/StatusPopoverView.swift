@@ -269,8 +269,8 @@ private struct LimitWindowView: View {
                         .fontWeight(.semibold)
                         .monospacedDigit()
                 }
-                UsageBar(fraction: Double(window.percentLeft) / 100,
-                         color: window.warningLevel == .normal ? accent : window.warningLevel.progressColor)
+                // One colour per provider at every level: orange/red text on a low window was unreadable.
+                UsageBar(fraction: Double(window.percentLeft) / 100, color: accent)
                     .accessibilityLabel(window.label)
                     .accessibilityValue("\(window.percentLeft) percent left")
                 if let resetsAtText = window.resetsAtText {
@@ -284,7 +284,6 @@ private struct LimitWindowView: View {
                 }
             }
             .font(.caption)
-            .foregroundStyle(window.warningLevel.textColor)
         } else {
             HStack(spacing: 8) {
                 Image(systemName: iconName)
@@ -323,30 +322,6 @@ private struct LimitWindowView: View {
         case 1..<50:
             return .orange
         default:
-            return .red
-        }
-    }
-}
-
-private extension LimitWarningLevel {
-    var progressColor: Color {
-        switch self {
-        case .normal:
-            return .accentColor
-        case .warning:
-            return .orange
-        case .critical:
-            return .red
-        }
-    }
-
-    var textColor: Color {
-        switch self {
-        case .normal:
-            return .primary
-        case .warning:
-            return .orange
-        case .critical:
             return .red
         }
     }
