@@ -329,7 +329,8 @@ struct MenuBarBars {
     }
 
     private static let barWidth: CGFloat = 30
-    private static let numberWidth: CGFloat = 26
+    // Fits "100%" at 11 pt semibold (32.9 pt); 26 cut it off.
+    private static let numberWidth: CGFloat = 34
     private static let blockGap: CGFloat = 8
     private static let height: CGFloat = 18
 
