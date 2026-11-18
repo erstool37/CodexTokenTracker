@@ -268,7 +268,8 @@ private extension LimitWarningLevel {
 /// Menu-bar summary, colored per provider: Codex monthly credits (blue) as one bar + number,
 /// then two Claude blocks (orange) — the team account left, the personal account right — each
 /// with 5h and weekly as two stacked bars + numbers. A plan without a 5h window (e.g. Ultra)
-/// is detected from the usage response and drawn as one weekly bar instead. Bars fill with the share still left and
+/// is detected from the usage response and drawn as one weekly bar instead; a personal one
+/// then sits under the Codex bar in a single two-row column. Bars fill with the share still left and
 /// numbers are % left, matching the popover. Drawn at display time so the text follows the menu
 /// bar's light/dark appearance.
 struct MenuBarBars {
@@ -334,26 +335,40 @@ struct MenuBarBars {
     private static let blockGap: CGFloat = 8
     private static let height: CGFloat = 18
 
+    /// A personal plan without a 5h window has one bar; it then shares a column with Codex
+    /// (Codex on top, personal weekly below), the same two-row shape as a 5h + weekly block.
+    var stacksPersonalUnderCodex: Bool { !claudePersonal.hasSessionLimit }
+
     func image() -> NSImage {
         let blockWidth = Self.barWidth + 3 + Self.numberWidth
-        let size = NSSize(width: blockWidth * 3 + Self.blockGap * 2, height: Self.height)
+        let blocks: CGFloat = stacksPersonalUnderCodex ? 2 : 3
+        let size = NSSize(width: blockWidth * blocks + Self.blockGap * (blocks - 1), height: Self.height)
+        let stacked = stacksPersonalUnderCodex
         let image = NSImage(size: size, flipped: true) { _ in
-            // Codex: one bar, vertically centred, larger number.
-            Self.drawRow(value: codexMonthlyLeft, color: Self.codexColor, x: 0, midY: Self.height / 2,
-                         barHeight: 4, fontSize: 11)
-            // Claude: team block, then personal block; each 5h on top, weekly below — or, for a
-            // plan without a 5h limit, a single weekly bar centred like the Codex one.
-            for (index, account) in [claudeTeam, claudePersonal].enumerated() {
-                let x = (blockWidth + Self.blockGap) * CGFloat(index + 1)
-                guard account.hasSessionLimit else {
-                    Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: Self.height / 2,
-                                 barHeight: 4, fontSize: 11)
-                    continue
+            func twoRows(_ top: Int?, _ topColor: NSColor, _ bottom: Int?, _ bottomColor: NSColor, x: CGFloat) {
+                Self.drawRow(value: top, color: topColor, x: x, midY: 4.5, barHeight: 3, fontSize: 8.5)
+                Self.drawRow(value: bottom, color: bottomColor, x: x, midY: 13.5, barHeight: 3, fontSize: 8.5)
+            }
+            func single(_ value: Int?, _ color: NSColor, x: CGFloat) {
+                Self.drawRow(value: value, color: color, x: x, midY: Self.height / 2, barHeight: 4, fontSize: 11)
+            }
+            func block(_ account: ClaudeAccountBars, x: CGFloat) {
+                if account.hasSessionLimit {
+                    twoRows(account.sessionLeft, Self.claudeColor, account.weeklyLeft, Self.claudeColor, x: x)
+                } else {
+                    single(account.weeklyLeft, Self.claudeColor, x: x)
                 }
-                Self.drawRow(value: account.sessionLeft, color: Self.claudeColor, x: x, midY: 4.5,
-                             barHeight: 3, fontSize: 8.5)
-                Self.drawRow(value: account.weeklyLeft, color: Self.claudeColor, x: x, midY: 13.5,
-                             barHeight: 3, fontSize: 8.5)
+            }
+            let step = blockWidth + Self.blockGap
+            if stacked {
+                // [Codex over personal weekly] [team]
+                twoRows(codexMonthlyLeft, Self.codexColor, claudePersonal.weeklyLeft, Self.claudeColor, x: 0)
+                block(claudeTeam, x: step)
+            } else {
+                // [Codex] [team] [personal]
+                single(codexMonthlyLeft, Self.codexColor, x: 0)
+                block(claudeTeam, x: step)
+                block(claudePersonal, x: step * 2)
             }
             return true
         }
