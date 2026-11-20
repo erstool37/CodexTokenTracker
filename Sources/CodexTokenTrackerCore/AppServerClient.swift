@@ -10,7 +10,7 @@ public enum AppServerClientError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .codexNotFound:
-            return "Could not find the codex executable in PATH, /opt/homebrew/bin, or /usr/local/bin."
+            return "Could not find the codex executable in PATH, ~/.local/bin, ~/.codex/packages/standalone/current/bin, /usr/local/bin, or /opt/homebrew/bin. Set CODEX_TOKEN_TRACKER_CODEX_BIN to override."
         case let .launchFailed(message):
             return "Failed to launch codex app-server: \(message)"
         case .noResponse:
@@ -32,7 +32,8 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
     private let decoder = JSONDecoder()
 
     public init(executableURL: URL? = AppServerStatusProvider.defaultCodexURL()) {
-        self.executableURL = executableURL ?? URL(fileURLWithPath: "/opt/homebrew/bin/codex")
+        self.executableURL = executableURL
+            ?? URL(fileURLWithPath: FileManager.default.homeDirectoryForCurrentUser.path + "/.local/bin/codex")
     }
 
     public func fetchStatus() async throws -> CodexStatusSnapshot {
@@ -287,17 +288,40 @@ public final class AppServerStatusProvider: StatusProviding, @unchecked Sendable
         )
     }
 
+    /// Directories searched for `codex` when the app runs from Finder, where the
+    /// inherited PATH is only `/usr/bin:/bin:/usr/sbin:/sbin`. The standalone
+    /// installer (`~/.local/bin/codex` -> `~/.codex/packages/standalone/current`)
+    /// is the current install route; the Homebrew paths stay last as a fallback
+    /// for machines that still carry an old cask.
+    static let codexSearchDirectories: [String] = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return [
+            "\(home)/.local/bin",
+            "\(home)/.codex/packages/standalone/current/bin",
+            "\(home)/.codex/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/opt/homebrew/bin"
+        ]
+    }()
+
     public static func defaultCodexURL() -> URL? {
+        // An explicit override wins, so a non-standard install needs no rebuild.
+        if let override = ProcessInfo.processInfo.environment["CODEX_TOKEN_TRACKER_CODEX_BIN"],
+           FileManager.default.isExecutableFile(atPath: override) {
+            return URL(fileURLWithPath: override)
+        }
+
         let pathCandidates = ProcessInfo.processInfo.environment["PATH"]?
             .split(separator: ":")
             .map { String($0) + "/codex" } ?? []
-        let candidates = pathCandidates + [
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-            "/usr/bin/codex"
-        ]
+        let candidates = pathCandidates + codexSearchDirectories.map { $0 + "/codex" }
+
         return candidates
             .first { FileManager.default.isExecutableFile(atPath: $0) }
+            // Deliberately unresolved: `~/.local/bin/codex` points into a
+            // version-pinned release dir, so resolving would stick to a release
+            // that a later codex upgrade deletes.
             .map(URL.init(fileURLWithPath:))
     }
 

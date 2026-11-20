@@ -163,6 +163,8 @@ expect(StatusFormatter.percentLeft(from: 54.4) == 46, "percent left should round
 expect(StatusFormatter.percentLeft(from: 130) == 0, "percent left should clamp low")
 expect(StatusFormatter.windowLabel(minutes: 300, fallback: "5h limit") == "5h limit", "300 minutes should be 5h")
 expect(StatusFormatter.windowLabel(minutes: 10_080, fallback: "Weekly limit") == "Weekly limit", "10080 minutes should be weekly")
+expect(StatusFormatter.windowLabel(minutes: 43_200, fallback: "Weekly limit") == "Monthly limit", "43200 minutes should be monthly")
+expect(StatusFormatter.windowLabel(minutes: 86_400, fallback: "Weekly limit") == "2mo limit", "86400 minutes should be 2 months")
 
 let json = """
 {
